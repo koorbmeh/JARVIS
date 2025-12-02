@@ -27,11 +27,17 @@ if not exist "jarvis_agent.py" (
 echo Starting JARVIS server...
 echo.
 echo Web interface will be available at: http://127.0.0.1:7860
+echo Browser will open automatically once server is ready...
 echo Press Ctrl+C to stop the server
 echo.
 echo ============================================================
 echo.
 
+REM Start PowerShell script in background to check for server readiness and open browser
+REM This checks every 2 seconds for up to 60 seconds (30 attempts)
+start /B powershell -Command "$maxAttempts = 30; $attempt = 0; $ready = $false; while (-not $ready -and $attempt -lt $maxAttempts) { Start-Sleep -Seconds 2; $attempt++; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:7860' -TimeoutSec 1 -UseBasicParsing -ErrorAction Stop; $ready = $true; Start-Process 'http://127.0.0.1:7860' } catch {} }; if (-not $ready) { Write-Host 'Server did not start in time. Please open http://127.0.0.1:7860 manually.' }"
+
+REM Start Python script (this will show output in this window)
 python jarvis_agent.py
 
 if errorlevel 1 (

@@ -26,11 +26,39 @@ from langchain.prompts import PromptTemplate
 import requests
 from bs4 import BeautifulSoup
 import pyautogui
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
+import webbrowser
 import time
+import base64
+from PIL import Image
+try:
+    import win32gui
+    import win32con
+    WIN32_AVAILABLE = True
+except ImportError:
+    WIN32_AVAILABLE = False
+    # Try to install pywin32 if not available (optional)
+    try:
+        import subprocess
+        import sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pywin32"])
+        import win32gui
+        import win32con
+        WIN32_AVAILABLE = True
+    except:
+        WIN32_AVAILABLE = False
+        print("⚠️  pywin32 not available - screenshots will capture all displays. Install with: pip install pywin32")
+try:
+    import pytesseract
+    from pytesseract import Output
+    TESSERACT_AVAILABLE = True
+    # Configure pytesseract to use the default Windows installation path if not in PATH
+    import os
+    tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    if os.path.exists(tesseract_path):
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+except ImportError:
+    TESSERACT_AVAILABLE = False
+    print("⚠️  pytesseract not available - text finding in screenshots will use vision model only")
 
 # ==================== CONFIGURATION ====================
 
@@ -39,8 +67,7 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 CHROMA_DB_DIR = "./chroma_db"
 DOCUMENTS_DIR = "./documents"
 
-# Global storage for browser drivers (keeps browsers open)
-_browser_drivers = []
+# No longer needed - using webbrowser module instead of Selenium
 
 # ==================== INITIALIZE OLLAMA ====================
 
@@ -57,6 +84,42 @@ embeddings = OllamaEmbeddings(
 )
 
 print(f"✅ Connected to Ollama: {OLLAMA_MODEL}")
+
+# ==================== VISION PROCESSING ====================
+
+def process_image_with_vision(image_path: str, question: str = "What's in this image?") -> str:
+    """Process an image using the vision model via Ollama API"""
+    try:
+        # Read and encode image as base64
+        with open(image_path, "rb") as image_file:
+            image_data = base64.b64encode(image_file.read()).decode('utf-8')
+        
+        # Call Ollama API using chat endpoint (better for vision models)
+        ollama_url = f"{OLLAMA_BASE_URL}/api/chat"
+        
+        prompt = f"{question}\n\nPlease describe what you see in detail."
+        
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_data]
+                }
+            ],
+            "stream": False
+        }
+        
+        response = requests.post(ollama_url, json=payload, timeout=300)  # Increased timeout for vision processing
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("message", {}).get("content", "Could not process image.")
+        else:
+            return f"Error processing image: HTTP {response.status_code}"
+    except Exception as e:
+        return f"Error processing image: {str(e)}"
 
 # ==================== RAG SETUP (Document Memory) ====================
 
@@ -268,12 +331,55 @@ def document_query_tool(query: str) -> str:
     print(f"📚 Querying documents: {query}")
     return doc_memory.query(query)
 
+def get_browser_window_region():
+    """Get the region (coordinates) of the browser window for focused screenshot"""
+    if not WIN32_AVAILABLE:
+        return None
+    
+    try:
+        def enum_handler(hwnd, results):
+            window_text = win32gui.GetWindowText(hwnd)
+            class_name = win32gui.GetClassName(hwnd)
+            # Look for common browser windows - prioritize windows with actual content
+            if any(browser in window_text.lower() or browser in class_name.lower() 
+                   for browser in ['chrome', 'firefox', 'edge', 'brave', 'opera', 'safari']):
+                if win32gui.IsWindowVisible(hwnd):
+                    # Get window rectangle
+                    rect = win32gui.GetWindowRect(hwnd)
+                    width = rect[2] - rect[0]
+                    height = rect[3] - rect[1]
+                    # Only include reasonably sized windows (not minimized)
+                    if width > 200 and height > 200:
+                        results.append((hwnd, window_text, rect))
+        
+        windows = []
+        win32gui.EnumWindows(enum_handler, windows)
+        
+        if windows:
+            # Get the most recently used browser window
+            hwnd, window_text, rect = windows[0]
+            # Bring window to foreground
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.5)  # Give window time to come to foreground
+            return rect  # Returns (left, top, right, bottom)
+    except Exception as e:
+        print(f"   Could not find browser window: {e}")
+    
+    return None
+
+def focus_browser_window():
+    """Try to focus/activate the browser window before taking a screenshot (for multi-display setups)"""
+    region = get_browser_window_region()
+    return region is not None
+
 def computer_control_tool(action: str) -> str:
     """
     Control the computer. Supported actions:
     - 'open browser: <url>' - Opens a browser to URL (browser stays open)
     - 'open browser: youtube.com/search?q=<query>' - Opens YouTube and searches
     - 'screenshot' - Takes a screenshot
+    - 'find_text_and_click: <text>' - Takes screenshot, finds text using OCR/vision, and clicks it
     - 'type: <text>' - Types text
     - 'click: <x>,<y>' - Clicks at coordinates
     """
@@ -311,53 +417,143 @@ def computer_control_tool(action: str) -> str:
                 else:
                     return f"Error: Invalid URL format: {url}"
             
+            # Use Python's built-in webbrowser module to open in default browser
+            # This opens a new tab in the user's default browser (same as the Gradio interface)
             try:
-                # Configure Chrome options to use user's regular Chrome profile
-                chrome_options = ChromeOptions()
-                
-                # Use the user's existing Chrome profile so it looks like regular Chrome
-                import os
-                username = os.getenv('USERNAME') or os.getenv('USER')
-                chrome_user_data = f"C:\\Users\\{username}\\AppData\\Local\\Google\\Chrome\\User Data"
-                
-                # Check if Chrome profile exists
-                if os.path.exists(chrome_user_data):
-                    chrome_options.add_argument(f"--user-data-dir={chrome_user_data}")
-                    chrome_options.add_argument("--profile-directory=Default")
-                    print(f"   Using your Chrome profile from: {chrome_user_data}")
-                else:
-                    # Fallback: create a separate profile but make it look normal
-                    print("   Using separate Chrome profile (your regular Chrome may be open)")
-                
-                # Keep browser open even after script ends
-                chrome_options.add_experimental_option("detach", True)
-                
-                # Don't show "Chrome is being controlled by automated test software" banner
-                chrome_options.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
-                chrome_options.add_experimental_option('useAutomationExtension', False)
-                
-                # Make it look more like regular Chrome
-                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-                
-                driver = webdriver.Chrome(options=chrome_options)
-                
-                # Store driver globally to prevent garbage collection
-                _browser_drivers.append(driver)
-                
-                driver.get(url)
-                time.sleep(2)  # Give page time to load
-                title = driver.title
-                
-                # Browser will stay open - detach option keeps it alive
-                return f"Opened browser to {url}. Page title: {title}. Browser window will remain open - you can close it manually when done."
+                webbrowser.open(url, new=2)  # new=2 opens in a new tab if possible
+                # Give the browser a moment to start loading
+                time.sleep(1)
+                return f"Opened {url} in your default browser (new tab)."
             except Exception as e:
-                return f"Error opening browser: {str(e)}. Please check that Chrome and ChromeDriver are installed correctly."
+                return f"Error opening browser: {str(e)}"
         
         elif action == "screenshot":
-            screenshot = pyautogui.screenshot()
+            # Try to get browser window region and focus it (for multi-display setups)
+            browser_region = get_browser_window_region()
+            
+            if browser_region:
+                # Capture only the browser window region
+                left, top, right, bottom = browser_region
+                screenshot = pyautogui.screenshot(region=(left, top, right - left, bottom - top))
+            else:
+                # Fallback to full screen
+                screenshot = pyautogui.screenshot()
+            
             screenshot_path = "screenshot.png"
             screenshot.save(screenshot_path)
-            return f"Screenshot saved to {screenshot_path}"
+            return f"Screenshot saved to {screenshot_path}. You can now ask me to analyze it by uploading it or asking 'What's in the screenshot?'"
+        
+        elif action.startswith("find_text_and_click:"):
+            # Find text in screenshot and click it
+            search_text = action.replace("find_text_and_click:", "").strip().lower()
+            
+            # Wait a moment for page to load if browser was just opened
+            time.sleep(2)
+            
+            # Try to get browser window region and focus it (for multi-display setups)
+            browser_region = get_browser_window_region()
+            window_offset_x = 0
+            window_offset_y = 0
+            
+            if browser_region:
+                # Capture only the browser window region
+                left, top, right, bottom = browser_region
+                window_offset_x = left  # Save offset for coordinate conversion
+                window_offset_y = top
+                screenshot = pyautogui.screenshot(region=(left, top, right - left, bottom - top))
+            else:
+                # Fallback to full screen
+                screenshot = pyautogui.screenshot()
+            
+            screenshot_path = "screenshot_temp.png"
+            screenshot.save(screenshot_path)
+            
+            # Try OCR first (more accurate coordinates)
+            if TESSERACT_AVAILABLE:
+                try:
+                    # Check if Tesseract is actually available (not just the Python package)
+                    try:
+                        pytesseract.get_tesseract_version()
+                    except Exception as tesseract_check_error:
+                        raise Exception(f"Tesseract OCR not found in PATH: {tesseract_check_error}. Please install Tesseract OCR (see README).")
+                    
+                    # Use pytesseract to find text with coordinates
+                    data = pytesseract.image_to_data(screenshot, output_type=Output.DICT)
+                    
+                    # Find the text in OCR results
+                    found = False
+                    for i, text in enumerate(data['text']):
+                        if search_text in text.lower():
+                            # Coordinates are relative to the screenshot, convert to screen coordinates
+                            x = window_offset_x + data['left'][i] + data['width'][i] // 2  # Center of text
+                            y = window_offset_y + data['top'][i] + data['height'][i] // 2
+                            print(f"   Clicking at screen coordinates ({x}, {y}) - text found at relative ({data['left'][i]}, {data['top'][i]})")
+                            # Ensure browser window is focused before clicking
+                            if browser_region:
+                                time.sleep(0.3)  # Give window time to be fully focused
+                            pyautogui.click(x, y)
+                            found = True
+                            return f"Found and clicked on '{search_text}' at screen coordinates ({x}, {y})"
+                    
+                    if not found:
+                        # Fallback to vision model
+                        vision_response = process_image_with_vision(
+                            screenshot_path, 
+                            question=f"Where is the word '{search_text}' located on the screen? Describe its position in detail, including approximate pixel coordinates if possible, or describe its location relative to other elements."
+                        )
+                        return f"Could not find '{search_text}' using OCR. Vision analysis: {vision_response}. You may need to click manually or provide more specific location."
+                except Exception as ocr_error:
+                    print(f"   OCR error: {ocr_error}, falling back to vision model")
+                    # Fallback to vision model with retry logic
+                    try:
+                        vision_response = process_image_with_vision(
+                            screenshot_path, 
+                            question=f"Where is the word '{search_text}' located on the screen? Describe its position in detail, including approximate pixel coordinates (x, y) if you can estimate them."
+                        )
+                        # Try to extract coordinates from vision response
+                        coord_match = re.search(r'\((\d+),\s*(\d+)\)|coordinates?\s*[:\s]+(\d+)[,\s]+(\d+)|x[:\s]+(\d+)[,\s]+y[:\s]+(\d+)', vision_response, re.IGNORECASE)
+                        if coord_match:
+                            coords = [g for g in coord_match.groups() if g]
+                            if len(coords) >= 2:
+                                # Coordinates from vision are relative to screenshot, convert to screen coordinates
+                                x = window_offset_x + int(coords[0])
+                                y = window_offset_y + int(coords[1])
+                                print(f"   Clicking at screen coordinates ({x}, {y}) - vision found at relative ({coords[0]}, {coords[1]})")
+                                # Ensure browser window is focused before clicking
+                                if browser_region:
+                                    time.sleep(0.3)  # Give window time to be fully focused
+                                pyautogui.click(x, y)
+                                return f"Found '{search_text}' using vision model. Clicked at screen coordinates ({x}, {y})."
+                        return f"OCR failed. Vision analysis: {vision_response}. Could not extract exact coordinates. Please try: 'click: x,y' with specific coordinates."
+                    except Exception as vision_error:
+                        return f"OCR failed and vision processing timed out or errored: {str(vision_error)}. Please try again or manually click on '{search_text}'."
+            else:
+                # Use vision model to find text location
+                try:
+                    vision_response = process_image_with_vision(
+                        screenshot_path, 
+                        question=f"Where is the word '{search_text}' located on the screen? Describe its position in detail, including approximate pixel coordinates (x, y) if you can estimate them, or describe its location relative to other visible elements."
+                    )
+                    
+                    # Try to extract coordinates from vision response
+                    coord_match = re.search(r'\((\d+),\s*(\d+)\)|coordinates?\s*[:\s]+(\d+)[,\s]+(\d+)|x[:\s]+(\d+)[,\s]+y[:\s]+(\d+)', vision_response, re.IGNORECASE)
+                    if coord_match:
+                        # Extract coordinates from match
+                        coords = [g for g in coord_match.groups() if g]
+                        if len(coords) >= 2:
+                            # Coordinates from vision are relative to screenshot, convert to screen coordinates
+                            x = window_offset_x + int(coords[0])
+                            y = window_offset_y + int(coords[1])
+                            print(f"   Clicking at screen coordinates ({x}, {y}) - vision found at relative ({coords[0]}, {coords[1]})")
+                            # Ensure browser window is focused before clicking
+                            if browser_region:
+                                time.sleep(0.3)  # Give window time to be fully focused
+                            pyautogui.click(x, y)
+                            return f"Found '{search_text}' based on vision analysis. Clicked at screen coordinates ({x}, {y})."
+                    
+                    return f"Vision analysis: {vision_response}. Could not extract exact coordinates. Please try: 'click: x,y' with specific coordinates, or describe the location more clearly."
+                except Exception as vision_error:
+                    return f"Vision processing timed out or errored: {str(vision_error)}. Please try again or manually click on '{search_text}'. The page may need more time to load - try waiting a few seconds and then asking again."
         
         elif action.startswith("type:"):
             text = action.replace("type:", "").strip()
@@ -371,7 +567,7 @@ def computer_control_tool(action: str) -> str:
             return f"Clicked at ({x}, {y})"
         
         else:
-            return f"Unknown action. Supported: 'open browser:', 'screenshot', 'type:', 'click:'"
+            return f"Unknown action. Supported: 'open browser:', 'screenshot', 'find_text_and_click: <text>', 'type:', 'click:'"
     
     except Exception as e:
         return f"Error controlling computer: {str(e)}"
@@ -391,7 +587,7 @@ tools = [
     Tool(
         name="ComputerControl",
         func=computer_control_tool,
-        description="Control the computer for automation tasks. Use this to: 'open browser: <url>' (opens URL and keeps browser open), 'open browser: youtube.com and search for \"query\"' (opens YouTube and searches), 'screenshot' (takes screenshot), 'type: <text>' (types text), 'click: x,y' (clicks coordinates). DO NOT use this tool to provide answers - use Final Answer instead."
+        description="Control the computer for automation tasks. Use this to: 'open browser: <url>' (opens URL in new tab), 'screenshot' (takes screenshot), 'find_text_and_click: <text>' (takes screenshot, finds text using OCR/vision, and clicks it), 'type: <text>' (types text), 'click: x,y' (clicks coordinates). DO NOT use this tool to provide answers - use Final Answer instead."
     )
 ]
 
@@ -419,6 +615,7 @@ Guidelines:
 - Use DocumentQuery for uploaded documents
 - Use ComputerControl ONLY for actual automation tasks (opening browser, taking screenshots, typing into apps, clicking)
 - For ComputerControl browser actions: Use 'open browser: <url>' format. For YouTube searches, use 'open browser: youtube.com and search for "query"'
+- For finding and clicking text on screen: Use 'find_text_and_click: <text>' - this takes a screenshot, finds the text using OCR/vision, and clicks it automatically. IMPORTANT: If you just opened a browser, wait a moment (2-3 seconds) or take a screenshot first to ensure the page has loaded before trying to find text
 - NEVER use ComputerControl to provide answers or responses - always use Final Answer for that
 - If you don't need a tool, go straight to Final Answer
 - CRITICAL: When WebSearch returns results, look for "EXTRACTED PRICE" or price information in the page content
@@ -452,25 +649,96 @@ agent_executor = AgentExecutor(
 
 # ==================== GRADIO INTERFACE ====================
 
-def chat(message: str, history: List) -> tuple:
-    """Process chat messages through the agent"""
+def chat(input_data, history: List) -> tuple:
+    """Handle chat with unified multimodal input (text + images)"""
     try:
         if history is None:
             history = []
         
-        response = agent_executor.invoke({"input": message})
+        # Extract text and files from multimodal input
+        if isinstance(input_data, dict):
+            message = input_data.get("text", "").strip()
+            files = input_data.get("files", [])
+            # Get first image if any
+            image = files[0] if files else None
+        else:
+            # Fallback for old format
+            message = str(input_data).strip() if input_data else ""
+            image = None
         
-        # NEW Gradio format with dictionaries
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": response["output"]})
+        # Handle empty message
+        if not message:
+            message = "What's in this image?" if image else ""
         
-        return history, ""
+        # If image is provided, process it with vision model first
+        if image is not None and image != "":
+            try:
+                # Save uploaded image temporarily
+                import tempfile
+                
+                # Handle Gradio image input (can be file path, dict, or PIL Image)
+                if isinstance(image, str):
+                    image_path = image
+                elif isinstance(image, dict):
+                    # Gradio sometimes returns dict with 'path' key
+                    image_path = image.get('path', image.get('name', None))
+                    if image_path is None:
+                        raise ValueError("Could not extract image path from upload")
+                else:
+                    # If it's a PIL Image or numpy array, save it
+                    temp_dir = tempfile.gettempdir()
+                    image_path = os.path.join(temp_dir, "jarvis_vision_temp.png")
+                    if hasattr(image, 'save'):
+                        image.save(image_path)
+                    else:
+                        raise ValueError("Unsupported image format")
+                
+                # Process image with vision model
+                vision_question = message if message and message.strip() else "What's in this image?"
+                vision_response = process_image_with_vision(image_path, question=vision_question)
+                
+                # Combine image analysis with user message
+                if message and message.strip():
+                    combined_input = f"User uploaded an image and asked: {message}\n\nImage analysis: {vision_response}\n\nPlease answer the user's question based on the image analysis."
+                else:
+                    combined_input = f"User uploaded an image. Image analysis: {vision_response}\n\nPlease describe what you see in the image."
+                
+                response = agent_executor.invoke({"input": combined_input})
+                
+                # Add to history with image indicator
+                user_content = message if message and message.strip() else "📷 [Image uploaded]"
+                history.append({"role": "user", "content": user_content})
+                history.append({"role": "assistant", "content": response["output"]})
+            except Exception as img_error:
+                # If image processing fails, fall back to text-only
+                print(f"⚠️ Image processing error: {img_error}")
+                if message and message.strip():
+                    response = agent_executor.invoke({"input": message})
+                    history.append({"role": "user", "content": message})
+                    history.append({"role": "assistant", "content": response["output"]})
+                else:
+                    history.append({"role": "user", "content": "📷 [Image upload failed]"})
+                    history.append({"role": "assistant", "content": f"Error processing image: {str(img_error)}"})
+        else:
+            # Regular text-only chat
+            if not message or not message.strip():
+                return history, None  # Don't process empty messages
+            
+            response = agent_executor.invoke({"input": message})
+            
+            # NEW Gradio format with dictionaries
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": response["output"]})
+        
+        return history, None  # Clear input
     except Exception as e:
         if history is None:
             history = []
-        history.append({"role": "user", "content": message})
+        message = str(input_data.get("text", "")) if isinstance(input_data, dict) else str(input_data) if input_data else ""
+        user_content = message if message else "📷 [Image uploaded]"
+        history.append({"role": "user", "content": user_content})
         history.append({"role": "assistant", "content": f"Error: {str(e)}"})
-        return history, ""
+        return history, None
 
 def upload_documents(files):
     """Handle document uploads"""
@@ -491,30 +759,18 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
             label="JARVIS Assistant"
         )
         
-        with gr.Row():
-            msg = gr.Textbox(
-                label="Your Message",
-                placeholder="Ask me anything! I can search the web, query documents, or control your computer.",
-                lines=2
-            )
-        
-        with gr.Row():
-            submit_btn = gr.Button("Send", variant="primary")
-            clear_btn = gr.Button("Clear Chat")
-        
-        gr.Examples(
-            examples=[
-                "Hello JARVIS!",
-                "What's the weather in Madison?",
-                "Search for AI news",
-                "Open browser to google.com"
-            ],
-            inputs=msg
+        # Unified multimodal input (text + images in one field)
+        multimodal_input = gr.MultimodalTextbox(
+            file_types=["image"],
+            show_label=False,
+            placeholder="Type your message here... You can paste images from clipboard or drag and drop them.",
         )
         
-        submit_btn.click(chat, inputs=[msg, chatbot], outputs=[chatbot, msg])
-        msg.submit(chat, inputs=[msg, chatbot], outputs=[chatbot, msg])
-        clear_btn.click(lambda: ([], ""), None, outputs=[chatbot, msg])
+        with gr.Row():
+            clear_btn = gr.Button("Clear Chat", scale=1)
+        
+        multimodal_input.submit(chat, inputs=[multimodal_input, chatbot], outputs=[chatbot, multimodal_input])
+        clear_btn.click(lambda: ([], None), None, outputs=[chatbot, multimodal_input])
     
     with gr.Tab("📄 Documents"):
         gr.Markdown("## Upload Documents")
@@ -536,6 +792,11 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
         
         **💬 Chat Naturally** - I'll decide when to use tools
         
+        **👁️ Vision & Images**
+        - Paste images directly in the unified input field (from clipboard)
+        - Drag and drop images into the input field
+        - Ask questions about images: "What's in this image?", "What does this chart show?"
+        
         **🔍 Web Search**
         - "What's the weather?"
         - "AI news"
@@ -547,12 +808,13 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
         
         **🖥️ Computer Control**
         - "Open browser to google.com"
-        - "Take a screenshot"
+        - "Open Google Sheets and click on the word Bills"
         
         ## Tips
         - Keep search queries SHORT (2-5 words work best)
         - Responses take 30-60 seconds (local processing)
         - Upload documents once - they persist
+        - Vision processing works with images and screenshots
         """)
 
 # ==================== LAUNCH ====================

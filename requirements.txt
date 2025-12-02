@@ -17,11 +17,16 @@ requests
 gradio
 
 # Computer Control
-selenium==4.38.0
 PyAutoGUI==0.9.54
-webdriver-manager==4.0.2
 
 # Document Processing
 pypdf
 python-docx
 python-pptx
+
+# Image Processing (Vision)
+Pillow
+pytesseract
+
+# Windows-specific (optional, for better window focus in multi-display setups)
+pywin32; sys_platform == "win32"

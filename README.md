@@ -5,17 +5,18 @@ A single, unified AI agent that combines web search, document memory (RAG), and 
 ## ✨ Features
 
 - **💬 Natural Language Interface** - Chat with JARVIS using natural language
+- **👁️ Vision Capabilities** - Upload images directly in the chat for JARVIS to analyze
 - **🔍 Web Search** - Search the web for current information using DuckDuckGo
 - **📚 Document Memory (RAG)** - Upload PDFs, TXT, or DOCX files and query them
-- **🖥️ Computer Control** - Automate browser actions, take screenshots, type text
+- **🖥️ Computer Control** - Automate browser actions, find and click text, take screenshots, type text
 - **🧠 Automatic Tool Selection** - JARVIS automatically decides which tool to use
-- **🌐 Web Interface** - Clean Gradio interface at http://127.0.0.1:7860
+- **🌐 Unified Web Interface** - Clean Gradio interface with unified text/image input at http://127.0.0.1:7860
 
 ## 📋 Prerequisites
 
 - **Python 3.11+** (Windows Store Python or standard installation)
 - **Ollama** installed and running locally
-- **Chrome Browser** (for computer automation features)
+- **Default web browser** (for opening URLs - uses your system's default browser)
 - **qwen3-vl:8b-instruct model** in Ollama
 
 ## 🚀 Installation
@@ -40,9 +41,25 @@ ollama list
 pip install -r requirements.txt
 ```
 
-### 3. Verify ChromeDriver
+**Note**: On Windows, `pywin32` is recommended (but optional) for better multi-monitor support when taking screenshots. It's included in requirements.txt but will only install on Windows.
 
-ChromeDriver will be automatically downloaded on first use via `webdriver-manager`. Make sure Chrome is installed.
+### 3. (Optional) Install Tesseract OCR for Text Finding
+
+For optimal text finding in screenshots, install Tesseract OCR:
+
+- **Windows**: 
+  - **Recommended**: Download the installer from [GitHub - UB-Mannheim Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
+  - During installation, check the option to "Add to PATH" or manually add `C:\Program Files\Tesseract-OCR` to your system PATH
+  - After installation, restart your terminal/PowerShell
+  - **Alternative**: If you have Chocolatey installed: `choco install tesseract`
+- **macOS**: `brew install tesseract`
+- **Linux**: `sudo apt-get install tesseract-ocr`
+
+**Note**: If Tesseract is not installed or not in PATH, JARVIS will automatically fall back to using the vision model to locate text, which may be less accurate but will still work. The vision model fallback is fully functional and will attempt to find and click text based on visual analysis.
+
+### 4. Ready to Go!
+
+JARVIS uses your system's default browser to open URLs, so no additional browser setup is needed.
 
 ## 🎯 Quick Start
 
@@ -70,9 +87,12 @@ The web interface will be available at: **http://127.0.0.1:7860**
 ### Example Commands
 
 - **Web Search**: "What's the current spot price of silver?"
+- **Vision**: Paste an image in the chat and ask "What's in this image?" or "What does this chart show?"
 - **Document Query**: "What does my uploaded document say about X?"
-- **Computer Control**: "Open browser to YouTube and search for AI News"
-- **Screenshot**: "Take a screenshot"
+- **Computer Control**: 
+  - "Open browser to YouTube and search for AI News"
+  - "Open Google Sheets and click on the word 'bills'"
+  - "Take a screenshot and find the text 'Submit'"
 - **Combined**: "Search for EV prices under $50k and open the first result"
 
 ## 🛠️ Configuration
@@ -107,9 +127,16 @@ Web search uses DuckDuckGo HTML interface. If you get no results:
 
 ### Browser Automation Fails
 
-- Ensure Chrome is installed
-- Close your regular Chrome before using browser automation (or it will use a separate profile)
-- ChromeDriver is auto-downloaded on first use
+- JARVIS uses your system's default browser (the same one showing the Gradio interface)
+- URLs open in new tabs in your existing browser
+- No ChromeDriver or Selenium setup needed
+
+### Multi-Display Setup Issues
+
+If you have multiple monitors and screenshots capture the wrong screen:
+- **Windows**: Install `pywin32` for better window detection: `pip install pywin32`
+- JARVIS will automatically try to focus and capture only the browser window
+- If issues persist, make sure the browser window is active/foreground before taking screenshots
 
 ### Ollama Connection Errors
 
@@ -136,7 +163,7 @@ The agent follows a "Thought → Action → Observation" loop until it has enoug
 
 - **Response Time**: 30-60 seconds per query is normal (local processing on RTX 2060)
 - **VRAM Usage**: ~5.5GB / 6GB with qwen3-vl:8b-instruct
-- **Browser Automation**: Opens a separate Chrome instance (not your regular Chrome)
+- **Browser Automation**: Opens URLs in new tabs in your default browser (same browser as the Gradio interface)
 - **Document Storage**: Uploaded documents are stored in ChromaDB and persist between sessions
 
 ## 🤝 Contributing
@@ -149,5 +176,5 @@ This project is provided as-is for personal use.
 
 ---
 
-**Built with**: Python, LangChain, Ollama, Gradio, ChromaDB, Selenium, PyAutoGUI
+**Built with**: Python, LangChain, Ollama, Gradio, ChromaDB, PyAutoGUI
 

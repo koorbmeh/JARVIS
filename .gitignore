@@ -27,7 +27,7 @@ wheels/
 chroma_db/
 documents/
 *.png
-screenshot.png
+screenshot*.png
 
 # IDE
 .vscode/
