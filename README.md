@@ -6,6 +6,7 @@ A single, unified AI agent that combines web search, document memory (RAG), and 
 
 - **💬 Natural Language Interface** - Chat with JARVIS using natural language
 - **👁️ Vision Capabilities** - Upload images directly in the chat for JARVIS to analyze
+- **🎤 Voice Input & Output** - Speak to JARVIS and get voice responses (Whisper STT + TTS)
 - **🔍 Web Search** - Search the web for current information using DuckDuckGo
 - **📚 Document Memory (RAG)** - Upload PDFs, TXT, or DOCX files and query them
 - **🖥️ Computer Control** - Automate browser actions, find and click text, take screenshots, type text
@@ -17,23 +18,30 @@ A single, unified AI agent that combines web search, document memory (RAG), and 
 - **Python 3.11+** (Windows Store Python or standard installation)
 - **Ollama** installed and running locally
 - **Default web browser** (for opening URLs - uses your system's default browser)
-- **qwen3-vl:8b-instruct model** in Ollama
+- **qwen3-vl:8b-instruct model** in Ollama (main LLM with vision support)
+- **nomic-embed-text model** in Ollama (for document embeddings/RAG)
 
 ## 🚀 Installation
 
-### 1. Install Ollama and Model
+### 1. Install Ollama and Models
 
-Download and install [Ollama](https://ollama.ai/), then pull the required model:
+Download and install [Ollama](https://ollama.ai/), then pull the required models:
 
 ```powershell
+# Main LLM model (supports vision)
 ollama pull qwen3-vl:8b-instruct
+
+# Embedding model for RAG (document memory)
+ollama pull nomic-embed-text
 ```
 
-Verify the model is installed:
+Verify the models are installed:
 
 ```powershell
 ollama list
 ```
+
+You should see both `qwen3-vl:8b-instruct` and `nomic-embed-text` in the list.
 
 ### 2. Install Python Dependencies
 
@@ -57,7 +65,22 @@ For optimal text finding in screenshots, install Tesseract OCR:
 
 **Note**: If Tesseract is not installed or not in PATH, JARVIS will automatically fall back to using the vision model to locate text, which may be less accurate but will still work. The vision model fallback is fully functional and will attempt to find and click text based on visual analysis.
 
-### 4. Ready to Go!
+### 4. (Optional) Voice Capabilities
+
+For voice input and output, install the voice dependencies:
+
+```powershell
+pip install openai-whisper pyaudio soundfile pyttsx3
+```
+
+**Note**: 
+- **Whisper** (STT): The first run will download the model (~150MB for "base" model). Larger models ("small", "medium") provide better accuracy but require more disk space and processing time.
+- **pyttsx3** (TTS): Uses your system's built-in voices. On Windows, you can change voices in Settings > Time & Language > Speech.
+- **pyaudio**: May require additional system dependencies on some platforms. If installation fails, see [PyAudio installation guide](https://people.csail.mit.edu/hubert/pyaudio/docs/).
+
+Voice features are optional - JARVIS works perfectly fine with text-only input.
+
+### 5. Ready to Go!
 
 JARVIS uses your system's default browser to open URLs, so no additional browser setup is needed.
 
@@ -89,17 +112,27 @@ The web interface will be available at: **http://127.0.0.1:7860**
 - **Web Search**: "What's the current spot price of silver?"
 - **Vision**: Paste an image in the chat and ask "What's in this image?" or "What does this chart show?"
 - **Document Query**: "What does my uploaded document say about X?"
+- **File Management**: 
+  - "Create a file called notes.txt with the content: Meeting notes..."
+  - "Read the file notes.txt"
+  - "List all my files"
+  - Created files are automatically added to RAG (if .txt, .pdf, or .docx)
 - **Computer Control**: 
   - "Open browser to YouTube and search for AI News"
   - "Open Google Sheets and click on the word 'bills'"
   - "Take a screenshot and find the text 'Submit'"
+- **Voice**: 
+  - Click the microphone button and speak your message (Voice Input mode)
+  - Toggle "Conversation Mode" for voice responses (STT + TTS)
+  - Speak naturally - JARVIS uses Whisper for accurate transcription
 - **Combined**: "Search for EV prices under $50k and open the first result"
 
 ## 🛠️ Configuration
 
 Edit `jarvis_agent.py` to customize:
 
-- **Ollama Model**: Change `OLLAMA_MODEL` (default: `qwen3-vl:8b-instruct`)
+- **Ollama LLM Model**: Change `OLLAMA_MODEL` (default: `qwen3-vl:8b-instruct`)
+- **Ollama Embedding Model**: Change `OLLAMA_EMBEDDING_MODEL` (default: `nomic-embed-text`)
 - **Ollama URL**: Change `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
 - **ChromaDB Directory**: Change `CHROMA_DB_DIR` (default: `./chroma_db`)
 
@@ -143,6 +176,19 @@ If you have multiple monitors and screenshots capture the wrong screen:
 - Verify Ollama is running: `ollama list`
 - Check the model is installed: `ollama list | findstr qwen3-vl`
 - Ensure `OLLAMA_BASE_URL` matches your Ollama instance
+
+### Verifying GPU Usage
+
+**Ollama (LLM & Embeddings):**
+- Ollama automatically uses GPU if available
+- Check GPU usage: `ollama ps` (shows running models and GPU memory)
+- Check Ollama logs for GPU initialization messages
+- If GPU isn't being used, ensure CUDA drivers are installed and Ollama was built with GPU support
+
+**Whisper (Speech-to-Text):**
+- JARVIS automatically detects and uses GPU for Whisper if available
+- Check console output on startup - should show "🎮 GPU detected: [GPU Name]" if using GPU
+- If using CPU, transcription will be slower but still functional
 
 ### Deprecation Warnings
 

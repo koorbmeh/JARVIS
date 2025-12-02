@@ -30,3 +30,18 @@ pytesseract
 
 # Windows-specific (optional, for better window focus in multi-display setups)
 pywin32; sys_platform == "win32"
+
+# Voice (Speech-to-Text and Text-to-Speech)
+# faster-whisper is 4-5x faster than openai-whisper (recommended)
+faster-whisper
+# openai-whisper  # Fallback if faster-whisper not available
+pyaudio
+soundfile
+# TTS options (install at least one)
+pyttsx3  # Simple cross-platform TTS (recommended for quick start)
+# piper-tts  # Higher quality TTS (optional, may require manual setup)
+
+# PyTorch with CUDA support (for GPU acceleration of Whisper)
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Or for CPU-only: pip install torch torchvision torchaudio
+torch>=2.0.0

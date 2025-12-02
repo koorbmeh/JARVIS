@@ -1,656 +1,223 @@
 """
-JARVIS - Unified Local AI Agent (Compatibility Version)
-Works with existing package versions - no upgrades needed
+JARVIS - Unified Local AI Agent
+Main entry point with Gradio interface
 """
 
 import os
-import json
-import warnings
-import re
-import urllib.parse
-from typing import Optional, List
+import time
+import tempfile
+from typing import List
 import gradio as gr
 
-# Suppress deprecation warnings for Ollama imports
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
+# Import from modules
+from config import OLLAMA_MODEL, OLLAMA_EMBEDDING_MODEL, OLLAMA_BASE_URL, CHROMA_DB_DIR, DOCUMENTS_DIR, RECORD_SECONDS
+from llm_setup import agent_executor
+from vision import process_image_with_vision
+from voice import transcribe_audio, text_to_speech, TTS_AVAILABLE
+from rag import doc_memory
 
-# Use deprecated imports (compatible with langchain 0.3.27 and langchain-core 0.3.80)
-# langchain-ollama requires langchain-core>=1.0.0 which conflicts with langchain 0.3.27
-from langchain_community.llms import Ollama as OllamaLLM
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.tools import Tool
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.prompts import PromptTemplate
-import requests
-from bs4 import BeautifulSoup
-import pyautogui
-import webbrowser
-import time
-import base64
-from PIL import Image
-try:
-    import win32gui
-    import win32con
-    WIN32_AVAILABLE = True
-except ImportError:
-    WIN32_AVAILABLE = False
-    # Try to install pywin32 if not available (optional)
-    try:
-        import subprocess
-        import sys
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pywin32"])
-        import win32gui
-        import win32con
-        WIN32_AVAILABLE = True
-    except:
-        WIN32_AVAILABLE = False
-        print("⚠️  pywin32 not available - screenshots will capture all displays. Install with: pip install pywin32")
-try:
-    import pytesseract
-    from pytesseract import Output
-    TESSERACT_AVAILABLE = True
-    # Configure pytesseract to use the default Windows installation path if not in PATH
-    import os
-    tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    if os.path.exists(tesseract_path):
-        pytesseract.pytesseract.tesseract_cmd = tesseract_path
-except ImportError:
-    TESSERACT_AVAILABLE = False
-    print("⚠️  pytesseract not available - text finding in screenshots will use vision model only")
+# Conversation mode state
+conversation_mode_active = False
 
-# ==================== CONFIGURATION ====================
 
-OLLAMA_MODEL = "qwen3-vl:8b-instruct"
-OLLAMA_BASE_URL = "http://localhost:11434"
-CHROMA_DB_DIR = "./chroma_db"
-DOCUMENTS_DIR = "./documents"
-
-# No longer needed - using webbrowser module instead of Selenium
-
-# ==================== INITIALIZE OLLAMA ====================
-
-print("🧠 Initializing Ollama connection...")
-llm = OllamaLLM(
-    model=OLLAMA_MODEL,
-    base_url=OLLAMA_BASE_URL,
-    temperature=0.7
-)
-
-embeddings = OllamaEmbeddings(
-    model=OLLAMA_MODEL,
-    base_url=OLLAMA_BASE_URL
-)
-
-print(f"✅ Connected to Ollama: {OLLAMA_MODEL}")
-
-# ==================== VISION PROCESSING ====================
-
-def process_image_with_vision(image_path: str, question: str = "What's in this image?") -> str:
-    """Process an image using the vision model via Ollama API"""
-    try:
-        # Read and encode image as base64
-        with open(image_path, "rb") as image_file:
-            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-        
-        # Call Ollama API using chat endpoint (better for vision models)
-        ollama_url = f"{OLLAMA_BASE_URL}/api/chat"
-        
-        prompt = f"{question}\n\nPlease describe what you see in detail."
-        
-        payload = {
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [image_data]
-                }
-            ],
-            "stream": False
-        }
-        
-        response = requests.post(ollama_url, json=payload, timeout=300)  # Increased timeout for vision processing
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("message", {}).get("content", "Could not process image.")
-        else:
-            return f"Error processing image: HTTP {response.status_code}"
-    except Exception as e:
-        return f"Error processing image: {str(e)}"
-
-# ==================== RAG SETUP (Document Memory) ====================
-
-class DocumentMemory:
-    def __init__(self):
-        self.vectorstore = None
-        self.documents_loaded = False
-        
-    def add_documents(self, file_paths: List[str]):
-        """Add documents to the vector database"""
-        from langchain_community.document_loaders import (
-            TextLoader, 
-            PyPDFLoader,
-            Docx2txtLoader
-        )
-        
-        documents = []
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
-        )
-        
-        for file_path in file_paths:
-            try:
-                if file_path.endswith('.txt'):
-                    loader = TextLoader(file_path)
-                elif file_path.endswith('.pdf'):
-                    loader = PyPDFLoader(file_path)
-                elif file_path.endswith('.docx'):
-                    loader = Docx2txtLoader(file_path)
-                else:
-                    continue
-                    
-                docs = loader.load()
-                documents.extend(text_splitter.split_documents(docs))
-                print(f"📄 Added: {os.path.basename(file_path)}")
-            except Exception as e:
-                print(f"❌ Error loading {file_path}: {e}")
-        
-        if documents:
-            if self.vectorstore is None:
-                self.vectorstore = Chroma.from_documents(
-                    documents=documents,
-                    embedding=embeddings,
-                    persist_directory=CHROMA_DB_DIR
-                )
-            else:
-                self.vectorstore.add_documents(documents)
-            
-            self.documents_loaded = True
-            print(f"✅ {len(documents)} document chunks indexed")
-        else:
-            print("⚠️ No documents loaded")
+def process_voice_input(audio, history: List) -> tuple:
+    """Process voice input: transcribe audio and get response, with TTS if conversation mode is active"""
+    global conversation_mode_active
     
-    def query(self, question: str) -> str:
-        """Query the document database"""
-        if not self.documents_loaded or self.vectorstore is None:
-            return "No documents have been added yet. Please upload documents first."
+    try:
+        if history is None:
+            history = []
         
+        if audio is None:
+            return history, None, None
+        
+        # Extract audio path from various formats (Gradio can return dict, string, or tuple)
+        audio_path = None
+        if isinstance(audio, str):
+            audio_path = audio
+        elif isinstance(audio, dict):
+            audio_path = audio.get('path', audio.get('name', audio.get('file', None)))
+        elif isinstance(audio, tuple):
+            audio_path = audio[0] if len(audio) > 0 else None
+        elif hasattr(audio, 'name'):
+            audio_path = audio.name
+        elif hasattr(audio, 'path'):
+            audio_path = audio.path
+        else:
+            audio_path = str(audio)
+        
+        # Clean up path
+        if audio_path:
+            audio_path = audio_path.strip().strip('"').strip("'")
+        
+        print(f"🎤 Audio path received: {audio_path}")
+        
+        if not audio_path:
+            history.append({"role": "user", "content": "🎤 [Voice input]"})
+            history.append({"role": "assistant", "content": "Error: No audio file received. Please try recording again."})
+            return history, None, None
+        
+        if not os.path.exists(audio_path):
+            history.append({"role": "user", "content": "🎤 [Voice input]"})
+            history.append({"role": "assistant", "content": f"Error: Audio file not found at: {audio_path}. Please try recording again."})
+            print(f"❌ Audio file not found: {audio_path}")
+            return history, None, None
+        
+        # Copy file to a more permanent location to prevent deletion issues
+        safe_audio_path = None
         try:
-            # Simple retrieval without RetrievalQA chain
-            docs = self.vectorstore.similarity_search(question, k=3)
-            
-            if not docs:
-                return "No relevant information found in documents."
-            
-            # Combine context and ask the LLM
-            context = "\n\n".join([doc.page_content for doc in docs])
-            prompt = f"""Based on the following context from documents, answer the question.
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-            
-            response = llm.invoke(prompt)
-            return response
+            import shutil
+            safe_audio_path = os.path.join(DOCUMENTS_DIR, f"temp_voice_{int(time.time())}.wav")
+            os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+            shutil.copy2(audio_path, safe_audio_path)
+            print(f"📋 Copied audio to safe location: {safe_audio_path}")
+            audio_path = safe_audio_path
         except Exception as e:
-            return f"Error querying documents: {str(e)}"
-
-doc_memory = DocumentMemory()
-
-# ==================== TOOLS ====================
-
-def web_search_tool(query: str) -> str:
-    """Search the web for current information using DuckDuckGo HTML interface"""
-    try:
-        print(f"🔍 Searching web for: {query}")
+            print(f"⚠️  Could not copy audio file: {e}, using original")
+            if not os.path.exists(audio_path):
+                history.append({"role": "user", "content": "🎤 [Voice input]"})
+                history.append({"role": "assistant", "content": f"Error: Audio file became inaccessible. Please try recording again."})
+                return history, None, None
         
-        # Use direct HTTP request to DuckDuckGo HTML interface (works when DDGS package fails)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
+        # Small delay to ensure file is fully written
+        time.sleep(0.2)
         
-        url = "https://html.duckduckgo.com/html/"
-        params = {"q": query}
-        
-        response = requests.post(url, data=params, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            return f"Error: DuckDuckGo returned status code {response.status_code}"
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Find search results - DuckDuckGo HTML structure
-        results = []
-        result_divs = soup.find_all('div', class_='result')
-        
-        for div in result_divs[:5]:  # Limit to 5 results
-            title_elem = div.find('a', class_='result__a')
-            snippet_elem = div.find('a', class_='result__snippet')
-            
-            if title_elem:
-                title = title_elem.get_text(strip=True)
-                url_link = title_elem.get('href', 'No URL')
-                snippet = snippet_elem.get_text(strip=True) if snippet_elem else "No description available"
-                
-                # Clean up URL (remove DuckDuckGo redirect)
-                if url_link.startswith('/l/?kh='):
-                    # Extract actual URL from DuckDuckGo redirect
-                    try:
-                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url_link).query)
-                        if 'uddg' in parsed:
-                            url_link = urllib.parse.unquote(parsed['uddg'][0])
-                    except:
-                        pass
-                
-                results.append({
-                    'title': title,
-                    'body': snippet,
-                    'url': url_link
-                })
-        
-        if not results:
-            return "No results found. Try a different search query."
-        
-        # Skip ad/redirect URLs and prioritize reputable financial sites
-        reputable_domains = ['kitco.com', 'apmex.com', 'jmbullion.com', 'sdbullion.com', 
-                            'moneymetals.com', 'goldprice.org', 'silverprice.org',
-                            'bloomberg.com', 'reuters.com', 'marketwatch.com']
-        
-        # Try to fetch actual content from reputable sites first
-        for result in results:
+        # Transcribe audio to text
+        transcribed = None
+        max_retries = 2
+        for attempt in range(max_retries):
             try:
-                url = result['url']
-                # Skip ad/redirect URLs
-                if not url or not url.startswith('http'):
-                    continue
-                if 'duckduckgo.com/y.js' in url or 'bing.com/aclick' in url:
-                    continue
-                
-                # Check if it's a reputable domain
-                is_reputable = any(domain in url.lower() for domain in reputable_domains)
-                
-                # Prioritize reputable sites, but also try others if no reputable ones found
-                if is_reputable or len([r for r in results if any(d in r.get('url', '').lower() for d in reputable_domains)]) == 0:
-                    print(f"   Fetching content from: {url}")
-                    page_response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-                    if page_response.status_code == 200:
-                        page_soup = BeautifulSoup(page_response.text, 'html.parser')
-                        # Extract text content (remove scripts, styles)
-                        for script in page_soup(["script", "style", "nav", "footer", "header"]):
-                            script.decompose()
-                        page_text = page_soup.get_text(separator=' ', strip=True)
-                        # Get more content for price extraction (first 500 words)
-                        page_text = ' '.join(page_text.split()[:500])
-                        result['page_content'] = page_text
-                        
-                        # Try to extract price from content
-                        # Look for price patterns like $XX.XX per ounce
-                        price_patterns = [
-                            r'\$[\d,]+\.?\d*\s*(?:per\s+)?(?:ounce|oz|troy\s+ounce)',
-                            r'(?:spot\s+price|current\s+price|price)[:\s]+\$?[\d,]+\.?\d*',
-                            r'\$[\d,]+\.?\d*\s*(?:USD|US\s+dollar)',
-                        ]
-                        for pattern in price_patterns:
-                            matches = re.findall(pattern, page_text, re.IGNORECASE)
-                            if matches:
-                                result['extracted_price'] = matches[0]
-                                break
-                        
-                        # Only fetch from one reputable site to avoid rate limiting
-                        if is_reputable:
-                            break
-            except Exception as e:
-                print(f"   Could not fetch {result['url']}: {e}")
-                result['page_content'] = None
-        
-        output = f"Web search results for '{query}':\n\n"
-        for i, result in enumerate(results, 1):
-            output += f"{i}. {result['title']}\n"
-            output += f"   {result['body']}\n"
-            if 'extracted_price' in result and result['extracted_price']:
-                output += f"   EXTRACTED PRICE: {result['extracted_price']}\n"
-            if 'page_content' in result and result['page_content']:
-                # Include relevant excerpt from page (first 400 chars)
-                content = result['page_content'][:400]
-                output += f"   Page content: {content}...\n"
-            output += f"   URL: {result['url']}\n\n"
-        
-        return output
-    except Exception as e:
-        return f"Error searching web: {str(e)}\nTip: Try simpler search terms."
-
-def document_query_tool(query: str) -> str:
-    """Query uploaded documents using RAG"""
-    print(f"📚 Querying documents: {query}")
-    return doc_memory.query(query)
-
-def get_browser_window_region():
-    """Get the region (coordinates) of the browser window for focused screenshot"""
-    if not WIN32_AVAILABLE:
-        return None
-    
-    try:
-        def enum_handler(hwnd, results):
-            window_text = win32gui.GetWindowText(hwnd)
-            class_name = win32gui.GetClassName(hwnd)
-            # Look for common browser windows - prioritize windows with actual content
-            if any(browser in window_text.lower() or browser in class_name.lower() 
-                   for browser in ['chrome', 'firefox', 'edge', 'brave', 'opera', 'safari']):
-                if win32gui.IsWindowVisible(hwnd):
-                    # Get window rectangle
-                    rect = win32gui.GetWindowRect(hwnd)
-                    width = rect[2] - rect[0]
-                    height = rect[3] - rect[1]
-                    # Only include reasonably sized windows (not minimized)
-                    if width > 200 and height > 200:
-                        results.append((hwnd, window_text, rect))
-        
-        windows = []
-        win32gui.EnumWindows(enum_handler, windows)
-        
-        if windows:
-            # Get the most recently used browser window
-            hwnd, window_text, rect = windows[0]
-            # Bring window to foreground
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(hwnd)
-            time.sleep(0.5)  # Give window time to come to foreground
-            return rect  # Returns (left, top, right, bottom)
-    except Exception as e:
-        print(f"   Could not find browser window: {e}")
-    
-    return None
-
-def focus_browser_window():
-    """Try to focus/activate the browser window before taking a screenshot (for multi-display setups)"""
-    region = get_browser_window_region()
-    return region is not None
-
-def computer_control_tool(action: str) -> str:
-    """
-    Control the computer. Supported actions:
-    - 'open browser: <url>' - Opens a browser to URL (browser stays open)
-    - 'open browser: youtube.com/search?q=<query>' - Opens YouTube and searches
-    - 'screenshot' - Takes a screenshot
-    - 'find_text_and_click: <text>' - Takes screenshot, finds text using OCR/vision, and clicks it
-    - 'type: <text>' - Types text
-    - 'click: <x>,<y>' - Clicks at coordinates
-    """
-    try:
-        print(f"🖥️ Computer control: {action}")
-        
-        if action.startswith("open browser:"):
-            url = action.replace("open browser:", "").strip()
-            
-            # Handle YouTube search requests - check if user wants to search YouTube
-            if "youtube" in url.lower():
-                # Check if there's a search request
-                if "search for" in url.lower():
-                    # Extract search query using regex
-                    search_match = re.search(r'search for ["\']([^"\']+)["\']', url, re.IGNORECASE)
-                    if not search_match:
-                        # Try without quotes
-                        search_match = re.search(r'search for\s+([^\s]+(?:\s+[^\s]+)*)', url, re.IGNORECASE)
-                    
-                    if search_match:
-                        query = search_match.group(1).strip()
-                        url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+                if not os.path.exists(audio_path):
+                    if attempt < max_retries - 1:
+                        print(f"⚠️  File disappeared, retrying... (attempt {attempt + 1})")
+                        time.sleep(0.5)
+                        continue
                     else:
-                        # Fallback: just open YouTube homepage
-                        url = "https://www.youtube.com"
+                        transcribed = f"Error: Audio file became inaccessible during processing"
+                        break
+                
+                try:
+                    with open(audio_path, 'rb') as test_file:
+                        test_file.read(1)
+                except Exception as access_error:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️  File access error, retrying... (attempt {attempt + 1}): {access_error}")
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        transcribed = f"Error: Cannot access audio file: {str(access_error)}"
+                        break
+                
+                transcribed = transcribe_audio(audio_path)
+                break
+            except FileNotFoundError as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️  FileNotFoundError, retrying... (attempt {attempt + 1})")
+                    time.sleep(0.5)
+                    continue
                 else:
-                    # Just open YouTube homepage
-                    url = "https://www.youtube.com"
-            
-            # Ensure URL has protocol (only if it doesn't already have one)
-            if not url.startswith(('http://', 'https://')):
-                # Check if it looks like a domain name
-                if '.' in url and not url.startswith('/'):
-                    url = 'https://' + url
-                else:
-                    return f"Error: Invalid URL format: {url}"
-            
-            # Use Python's built-in webbrowser module to open in default browser
-            # This opens a new tab in the user's default browser (same as the Gradio interface)
-            try:
-                webbrowser.open(url, new=2)  # new=2 opens in a new tab if possible
-                # Give the browser a moment to start loading
-                time.sleep(1)
-                return f"Opened {url} in your default browser (new tab)."
+                    transcribed = f"Error: Audio file not found: {str(e)}"
+                    break
             except Exception as e:
-                return f"Error opening browser: {str(e)}"
+                transcribed = f"Error transcribing audio: {str(e)}"
+                break
         
-        elif action == "screenshot":
-            # Try to get browser window region and focus it (for multi-display setups)
-            browser_region = get_browser_window_region()
-            
-            if browser_region:
-                # Capture only the browser window region
-                left, top, right, bottom = browser_region
-                screenshot = pyautogui.screenshot(region=(left, top, right - left, bottom - top))
+        if transcribed is None or transcribed.startswith("Error"):
+            history.append({"role": "user", "content": "🎤 [Voice input failed]"})
+            history.append({"role": "assistant", "content": transcribed or "Error: Transcription failed"})
+            try:
+                if safe_audio_path and os.path.exists(safe_audio_path):
+                    os.remove(safe_audio_path)
+            except Exception as cleanup_error:
+                print(f"⚠️  Could not clean up temp file: {cleanup_error}")
+            return history, None, None
+        
+        # Clean up temp file after successful transcription
+        try:
+            if safe_audio_path and os.path.exists(safe_audio_path):
+                os.remove(safe_audio_path)
+                print(f"🧹 Cleaned up temp audio file")
+        except Exception as cleanup_error:
+            print(f"⚠️  Could not clean up temp file: {cleanup_error}")
+        
+        # Build context from conversation history
+        context = ""
+        if len(history) > 0:
+            recent_history = history[-6:] if len(history) > 6 else history
+            context_parts = []
+            for msg in recent_history:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                # Ensure content is a string (handle case where it might be a list)
+                if isinstance(content, list):
+                    content = " ".join(str(item) for item in content)
+                elif not isinstance(content, str):
+                    content = str(content)
+                content_clean = content.replace("🎤 ", "").replace("📷 ", "").strip()
+                if role == "user":
+                    context_parts.append(f"User: {content_clean}")
+                elif role == "assistant":
+                    context_parts.append(f"Assistant: {content_clean}")
+            if context_parts:
+                context = "\n".join(context_parts) + "\n\n"
+        
+        # Add context to input if we have history
+        full_input = transcribed
+        if context:
+            full_input = f"Previous conversation:\n{context}Current question: {transcribed}"
+        
+        # Process transcribed text like regular chat
+        response = agent_executor.invoke({"input": full_input})
+        
+        # Clean up response - remove "Agent stopped" message if we have a valid answer
+        response_text = response["output"]
+        if "Agent stopped due to iteration limit or time limit" in response_text:
+            # Check if there's actual content before the error message
+            parts = response_text.split("Agent stopped due to iteration limit or time limit")
+            if parts[0].strip():
+                # Use the content before the error message
+                response_text = parts[0].strip()
             else:
-                # Fallback to full screen
-                screenshot = pyautogui.screenshot()
-            
-            screenshot_path = "screenshot.png"
-            screenshot.save(screenshot_path)
-            return f"Screenshot saved to {screenshot_path}. You can now ask me to analyze it by uploading it or asking 'What's in the screenshot?'"
+                # If no content before error, keep the error but make it less alarming
+                response_text = response_text.replace(
+                    "Agent stopped due to iteration limit or time limit",
+                    "Note: Response may be incomplete due to time constraints."
+                )
         
-        elif action.startswith("find_text_and_click:"):
-            # Find text in screenshot and click it
-            search_text = action.replace("find_text_and_click:", "").strip().lower()
-            
-            # Wait a moment for page to load if browser was just opened
-            time.sleep(2)
-            
-            # Try to get browser window region and focus it (for multi-display setups)
-            browser_region = get_browser_window_region()
-            window_offset_x = 0
-            window_offset_y = 0
-            
-            if browser_region:
-                # Capture only the browser window region
-                left, top, right, bottom = browser_region
-                window_offset_x = left  # Save offset for coordinate conversion
-                window_offset_y = top
-                screenshot = pyautogui.screenshot(region=(left, top, right - left, bottom - top))
-            else:
-                # Fallback to full screen
-                screenshot = pyautogui.screenshot()
-            
-            screenshot_path = "screenshot_temp.png"
-            screenshot.save(screenshot_path)
-            
-            # Try OCR first (more accurate coordinates)
-            if TESSERACT_AVAILABLE:
-                try:
-                    # Check if Tesseract is actually available (not just the Python package)
-                    try:
-                        pytesseract.get_tesseract_version()
-                    except Exception as tesseract_check_error:
-                        raise Exception(f"Tesseract OCR not found in PATH: {tesseract_check_error}. Please install Tesseract OCR (see README).")
-                    
-                    # Use pytesseract to find text with coordinates
-                    data = pytesseract.image_to_data(screenshot, output_type=Output.DICT)
-                    
-                    # Find the text in OCR results
-                    found = False
-                    for i, text in enumerate(data['text']):
-                        if search_text in text.lower():
-                            # Coordinates are relative to the screenshot, convert to screen coordinates
-                            x = window_offset_x + data['left'][i] + data['width'][i] // 2  # Center of text
-                            y = window_offset_y + data['top'][i] + data['height'][i] // 2
-                            print(f"   Clicking at screen coordinates ({x}, {y}) - text found at relative ({data['left'][i]}, {data['top'][i]})")
-                            # Ensure browser window is focused before clicking
-                            if browser_region:
-                                time.sleep(0.3)  # Give window time to be fully focused
-                            pyautogui.click(x, y)
-                            found = True
-                            return f"Found and clicked on '{search_text}' at screen coordinates ({x}, {y})"
-                    
-                    if not found:
-                        # Fallback to vision model
-                        vision_response = process_image_with_vision(
-                            screenshot_path, 
-                            question=f"Where is the word '{search_text}' located on the screen? Describe its position in detail, including approximate pixel coordinates if possible, or describe its location relative to other elements."
-                        )
-                        return f"Could not find '{search_text}' using OCR. Vision analysis: {vision_response}. You may need to click manually or provide more specific location."
-                except Exception as ocr_error:
-                    print(f"   OCR error: {ocr_error}, falling back to vision model")
-                    # Fallback to vision model with retry logic
-                    try:
-                        vision_response = process_image_with_vision(
-                            screenshot_path, 
-                            question=f"Where is the word '{search_text}' located on the screen? Describe its position in detail, including approximate pixel coordinates (x, y) if you can estimate them."
-                        )
-                        # Try to extract coordinates from vision response
-                        coord_match = re.search(r'\((\d+),\s*(\d+)\)|coordinates?\s*[:\s]+(\d+)[,\s]+(\d+)|x[:\s]+(\d+)[,\s]+y[:\s]+(\d+)', vision_response, re.IGNORECASE)
-                        if coord_match:
-                            coords = [g for g in coord_match.groups() if g]
-                            if len(coords) >= 2:
-                                # Coordinates from vision are relative to screenshot, convert to screen coordinates
-                                x = window_offset_x + int(coords[0])
-                                y = window_offset_y + int(coords[1])
-                                print(f"   Clicking at screen coordinates ({x}, {y}) - vision found at relative ({coords[0]}, {coords[1]})")
-                                # Ensure browser window is focused before clicking
-                                if browser_region:
-                                    time.sleep(0.3)  # Give window time to be fully focused
-                                pyautogui.click(x, y)
-                                return f"Found '{search_text}' using vision model. Clicked at screen coordinates ({x}, {y})."
-                        return f"OCR failed. Vision analysis: {vision_response}. Could not extract exact coordinates. Please try: 'click: x,y' with specific coordinates."
-                    except Exception as vision_error:
-                        return f"OCR failed and vision processing timed out or errored: {str(vision_error)}. Please try again or manually click on '{search_text}'."
-            else:
-                # Use vision model to find text location
-                try:
-                    vision_response = process_image_with_vision(
-                        screenshot_path, 
-                        question=f"Where is the word '{search_text}' located on the screen? Describe its position in detail, including approximate pixel coordinates (x, y) if you can estimate them, or describe its location relative to other visible elements."
-                    )
-                    
-                    # Try to extract coordinates from vision response
-                    coord_match = re.search(r'\((\d+),\s*(\d+)\)|coordinates?\s*[:\s]+(\d+)[,\s]+(\d+)|x[:\s]+(\d+)[,\s]+y[:\s]+(\d+)', vision_response, re.IGNORECASE)
-                    if coord_match:
-                        # Extract coordinates from match
-                        coords = [g for g in coord_match.groups() if g]
-                        if len(coords) >= 2:
-                            # Coordinates from vision are relative to screenshot, convert to screen coordinates
-                            x = window_offset_x + int(coords[0])
-                            y = window_offset_y + int(coords[1])
-                            print(f"   Clicking at screen coordinates ({x}, {y}) - vision found at relative ({coords[0]}, {coords[1]})")
-                            # Ensure browser window is focused before clicking
-                            if browser_region:
-                                time.sleep(0.3)  # Give window time to be fully focused
-                            pyautogui.click(x, y)
-                            return f"Found '{search_text}' based on vision analysis. Clicked at screen coordinates ({x}, {y})."
-                    
-                    return f"Vision analysis: {vision_response}. Could not extract exact coordinates. Please try: 'click: x,y' with specific coordinates, or describe the location more clearly."
-                except Exception as vision_error:
-                    return f"Vision processing timed out or errored: {str(vision_error)}. Please try again or manually click on '{search_text}'. The page may need more time to load - try waiting a few seconds and then asking again."
+        # Add to history
+        history.append({"role": "user", "content": f"🎤 {transcribed}"})
+        history.append({"role": "assistant", "content": response_text})
         
-        elif action.startswith("type:"):
-            text = action.replace("type:", "").strip()
-            pyautogui.write(text, interval=0.1)
-            return f"Typed: {text}"
-        
-        elif action.startswith("click:"):
-            coords = action.replace("click:", "").strip()
-            x, y = map(int, coords.split(","))
-            pyautogui.click(x, y)
-            return f"Clicked at ({x}, {y})"
-        
+        # Generate TTS if conversation mode is active
+        tts_audio = None
+        print(f"🔍 Voice Input TTS Debug: conversation_mode_active={conversation_mode_active}, TTS_AVAILABLE={TTS_AVAILABLE}")
+        if conversation_mode_active and TTS_AVAILABLE:
+            print(f"🔊 Generating TTS for voice response...")
+            tts_audio = text_to_speech(response_text)
+            if tts_audio:
+                tts_audio = os.path.abspath(tts_audio)
+                if os.path.exists(tts_audio):
+                    file_size = os.path.getsize(tts_audio)
+                    print(f"🔊 TTS audio ready: {tts_audio} ({file_size} bytes)")
+                else:
+                    print(f"❌ TTS file not found: {tts_audio}")
+                    tts_audio = None
         else:
-            return f"Unknown action. Supported: 'open browser:', 'screenshot', 'find_text_and_click: <text>', 'type:', 'click:'"
-    
+            print(f"⚠️ TTS not generated: conversation_mode_active={conversation_mode_active}, TTS_AVAILABLE={TTS_AVAILABLE}")
+        
+        return history, None, tts_audio
     except Exception as e:
-        return f"Error controlling computer: {str(e)}"
+        if history is None:
+            history = []
+        history.append({"role": "user", "content": "🎤 [Voice input]"})
+        history.append({"role": "assistant", "content": f"Error processing voice: {str(e)}"})
+        return history, None, None
 
-# Create LangChain tools
-tools = [
-    Tool(
-        name="WebSearch",
-        func=web_search_tool,
-        description="Search the web for current information, news, or facts. Input should be a simple search query (2-5 words)."
-    ),
-    Tool(
-        name="DocumentQuery",
-        func=document_query_tool,
-        description="Query documents that the user has uploaded. Input should be a question about the documents."
-    ),
-    Tool(
-        name="ComputerControl",
-        func=computer_control_tool,
-        description="Control the computer for automation tasks. Use this to: 'open browser: <url>' (opens URL in new tab), 'screenshot' (takes screenshot), 'find_text_and_click: <text>' (takes screenshot, finds text using OCR/vision, and clicks it), 'type: <text>' (types text), 'click: x,y' (clicks coordinates). DO NOT use this tool to provide answers - use Final Answer instead."
-    )
-]
-
-# ==================== AGENT SETUP ====================
-
-template = """You are JARVIS, a helpful AI assistant with access to tools.
-
-You have access to the following tools:
-
-{tools}
-
-Use the following format:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Guidelines:
-- Use WebSearch for current info/news (keep queries SHORT: 2-5 words)
-- Use DocumentQuery for uploaded documents
-- Use ComputerControl ONLY for actual automation tasks (opening browser, taking screenshots, typing into apps, clicking)
-- For ComputerControl browser actions: Use 'open browser: <url>' format. For YouTube searches, use 'open browser: youtube.com and search for "query"'
-- For finding and clicking text on screen: Use 'find_text_and_click: <text>' - this takes a screenshot, finds the text using OCR/vision, and clicks it automatically. IMPORTANT: If you just opened a browser, wait a moment (2-3 seconds) or take a screenshot first to ensure the page has loaded before trying to find text
-- NEVER use ComputerControl to provide answers or responses - always use Final Answer for that
-- If you don't need a tool, go straight to Final Answer
-- CRITICAL: When WebSearch returns results, look for "EXTRACTED PRICE" or price information in the page content
-- If you see "EXTRACTED PRICE" in the search results, use that exact value in your answer
-- If price information is in the page content, extract and use the specific price value mentioned
-- NEVER make up or guess specific numbers, prices, dates, or statistics that are not in the search results
-- If search results don't contain the exact price information requested, tell the user you found sources but they should check those sources for the exact current value
-- If WebSearch fails completely, provide your best answer based on your knowledge and use Final Answer
-- Be helpful and conversational, but always be honest about what information you have vs. what you don't have
-
-Begin!
-
-Question: {input}
-Thought: {agent_scratchpad}"""
-
-prompt = PromptTemplate.from_template(template)
-
-agent = create_react_agent(
-    llm=llm,
-    tools=tools,
-    prompt=prompt
-)
-
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    max_iterations=5,
-    handle_parsing_errors=True
-)
-
-# ==================== GRADIO INTERFACE ====================
 
 def chat(input_data, history: List) -> tuple:
     """Handle chat with unified multimodal input (text + images)"""
+    global conversation_mode_active
+    
     try:
         if history is None:
             history = []
@@ -659,10 +226,8 @@ def chat(input_data, history: List) -> tuple:
         if isinstance(input_data, dict):
             message = input_data.get("text", "").strip()
             files = input_data.get("files", [])
-            # Get first image if any
             image = files[0] if files else None
         else:
-            # Fallback for old format
             message = str(input_data).strip() if input_data else ""
             image = None
         
@@ -673,19 +238,16 @@ def chat(input_data, history: List) -> tuple:
         # If image is provided, process it with vision model first
         if image is not None and image != "":
             try:
-                # Save uploaded image temporarily
                 import tempfile
                 
-                # Handle Gradio image input (can be file path, dict, or PIL Image)
+                # Handle Gradio image input
                 if isinstance(image, str):
                     image_path = image
                 elif isinstance(image, dict):
-                    # Gradio sometimes returns dict with 'path' key
                     image_path = image.get('path', image.get('name', None))
                     if image_path is None:
                         raise ValueError("Could not extract image path from upload")
                 else:
-                    # If it's a PIL Image or numpy array, save it
                     temp_dir = tempfile.gettempdir()
                     image_path = os.path.join(temp_dir, "jarvis_vision_temp.png")
                     if hasattr(image, 'save'):
@@ -705,32 +267,171 @@ def chat(input_data, history: List) -> tuple:
                 
                 response = agent_executor.invoke({"input": combined_input})
                 
-                # Add to history with image indicator
+                # Clean up response - remove "Agent stopped" message if we have a valid answer
+                response_text = response["output"]
+                if "Agent stopped due to iteration limit or time limit" in response_text:
+                    # Check if there's actual content before the error message
+                    parts = response_text.split("Agent stopped due to iteration limit or time limit")
+                    if parts[0].strip():
+                        # Use the content before the error message
+                        response_text = parts[0].strip()
+                    else:
+                        # If no content before error, keep the error but make it less alarming
+                        response_text = response_text.replace(
+                            "Agent stopped due to iteration limit or time limit",
+                            "Note: Response may be incomplete due to time constraints."
+                        )
+                
+                # Add to history
                 user_content = message if message and message.strip() else "📷 [Image uploaded]"
                 history.append({"role": "user", "content": user_content})
-                history.append({"role": "assistant", "content": response["output"]})
+                history.append({"role": "assistant", "content": response_text})
+                
+                # Generate TTS if voice responses are enabled
+                tts_audio = None
+                if conversation_mode_active and TTS_AVAILABLE:
+                    tts_audio = text_to_speech(response_text)
+                    if tts_audio:
+                        print(f"🔊 TTS audio ready: {tts_audio}")
+                
+                return history, None, tts_audio
             except Exception as img_error:
-                # If image processing fails, fall back to text-only
                 print(f"⚠️ Image processing error: {img_error}")
                 if message and message.strip():
                     response = agent_executor.invoke({"input": message})
+                    
+                    # Clean up response - remove "Agent stopped" message if we have a valid answer
+                    response_text = response["output"]
+                    if "Agent stopped due to iteration limit or time limit" in response_text:
+                        # Check if there's actual content before the error message
+                        parts = response_text.split("Agent stopped due to iteration limit or time limit")
+                        if parts[0].strip():
+                            # Use the content before the error message
+                            response_text = parts[0].strip()
+                        else:
+                            # If no content before error, keep the error but make it less alarming
+                            response_text = response_text.replace(
+                                "Agent stopped due to iteration limit or time limit",
+                                "Note: Response may be incomplete due to time constraints."
+                            )
+                    
                     history.append({"role": "user", "content": message})
-                    history.append({"role": "assistant", "content": response["output"]})
+                    history.append({"role": "assistant", "content": response_text})
+                    
+                    tts_audio = None
+                    if conversation_mode_active and TTS_AVAILABLE:
+                        tts_audio = text_to_speech(response_text)
+                        if tts_audio:
+                            print(f"🔊 TTS audio ready: {tts_audio}")
+                    
+                    return history, None, tts_audio
                 else:
                     history.append({"role": "user", "content": "📷 [Image upload failed]"})
                     history.append({"role": "assistant", "content": f"Error processing image: {str(img_error)}"})
+                    return history, None, None
         else:
             # Regular text-only chat
             if not message or not message.strip():
-                return history, None  # Don't process empty messages
+                return history, None, None
             
-            response = agent_executor.invoke({"input": message})
+            # Fast path for simple greetings (bypass agent for speed)
+            message_lower = message.lower().strip()
+            simple_greetings = ["hi", "hello", "hey", "hi jarvis", "hello jarvis", "hey jarvis", "thanks", "thank you", "ok", "okay", "yes", "no"]
+            if message_lower in simple_greetings:
+                # Quick responses without agent overhead
+                greetings_responses = {
+                    "hi": "Hello! How can I help you?",
+                    "hello": "Hi there! What can I do for you?",
+                    "hey": "Hey! What's up?",
+                    "hi jarvis": "Hello! Ready to assist.",
+                    "hello jarvis": "Hi! How can I help?",
+                    "hey jarvis": "Hey! What do you need?",
+                    "thanks": "You're welcome!",
+                    "thank you": "You're welcome!",
+                    "ok": "Got it!",
+                    "okay": "Got it!",
+                    "yes": "Understood.",
+                    "no": "Understood."
+                }
+                quick_response = greetings_responses.get(message_lower, "Hello! How can I help?")
+                history.append({"role": "user", "content": message})
+                history.append({"role": "assistant", "content": quick_response})
+                
+                # Generate TTS if needed
+                tts_audio = None
+                if conversation_mode_active and TTS_AVAILABLE:
+                    tts_audio = text_to_speech(quick_response)
+                    if tts_audio:
+                        tts_audio = os.path.abspath(tts_audio)
+                
+                return history, None, tts_audio
             
-            # NEW Gradio format with dictionaries
+            # Build context from conversation history for agent
+            context = ""
+            if len(history) > 0:
+                # Include last 3 exchanges for context (6 messages: 3 user + 3 assistant)
+                recent_history = history[-6:] if len(history) > 6 else history
+                context_parts = []
+                for msg in recent_history:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    # Ensure content is a string (handle case where it might be a list)
+                    if isinstance(content, list):
+                        content = " ".join(str(item) for item in content)
+                    elif not isinstance(content, str):
+                        content = str(content)
+                    # Remove emoji prefixes for cleaner context
+                    content_clean = content.replace("🎤 ", "").replace("📷 ", "").strip()
+                    if role == "user":
+                        context_parts.append(f"User: {content_clean}")
+                    elif role == "assistant":
+                        context_parts.append(f"Assistant: {content_clean}")
+                if context_parts:
+                    context = "\n".join(context_parts) + "\n\n"
+            
+            # Add context to input if we have history
+            full_input = message
+            if context:
+                full_input = f"Previous conversation:\n{context}Current question: {message}"
+            
+            response = agent_executor.invoke({"input": full_input})
+            
+            # Clean up response - remove "Agent stopped" message if we have a valid answer
+            response_text = response["output"]
+            if "Agent stopped due to iteration limit or time limit" in response_text:
+                # Check if there's actual content before the error message
+                parts = response_text.split("Agent stopped due to iteration limit or time limit")
+                if parts[0].strip():
+                    # Use the content before the error message
+                    response_text = parts[0].strip()
+                else:
+                    # If no content before error, keep the error but make it less alarming
+                    response_text = response_text.replace(
+                        "Agent stopped due to iteration limit or time limit",
+                        "Note: Response may be incomplete due to time constraints."
+                    )
+            
             history.append({"role": "user", "content": message})
-            history.append({"role": "assistant", "content": response["output"]})
+            history.append({"role": "assistant", "content": response_text})
         
-        return history, None  # Clear input
+        # Generate TTS if voice responses are enabled
+        tts_audio = None
+        print(f"🔍 TTS Debug: conversation_mode_active={conversation_mode_active}, TTS_AVAILABLE={TTS_AVAILABLE}")
+        if conversation_mode_active and TTS_AVAILABLE:
+            print(f"🔊 Generating TTS for response...")
+            tts_audio = text_to_speech(response_text)
+            if tts_audio:
+                tts_audio = os.path.abspath(tts_audio)
+                if os.path.exists(tts_audio):
+                    file_size = os.path.getsize(tts_audio)
+                    print(f"🔊 TTS audio ready: {tts_audio} ({file_size} bytes)")
+                else:
+                    print(f"❌ TTS file not found: {tts_audio}")
+                    tts_audio = None
+        else:
+            print(f"⚠️ TTS not generated: conversation_mode_active={conversation_mode_active}, TTS_AVAILABLE={TTS_AVAILABLE}")
+        
+        return history, None, tts_audio
     except Exception as e:
         if history is None:
             history = []
@@ -738,7 +439,8 @@ def chat(input_data, history: List) -> tuple:
         user_content = message if message else "📷 [Image uploaded]"
         history.append({"role": "user", "content": user_content})
         history.append({"role": "assistant", "content": f"Error: {str(e)}"})
-        return history, None
+        return history, None, None
+
 
 def upload_documents(files):
     """Handle document uploads"""
@@ -749,6 +451,57 @@ def upload_documents(files):
     doc_memory.add_documents(file_paths)
     return f"✅ Uploaded and indexed {len(files)} document(s)"
 
+
+def list_documents():
+    """List all files in the documents directory with their status"""
+    try:
+        os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+        files = [f for f in os.listdir(DOCUMENTS_DIR) if os.path.isfile(os.path.join(DOCUMENTS_DIR, f))]
+        
+        if not files:
+            return "No files found in documents directory."
+        
+        output = f"**Files in Documents Directory** ({len(files)} total):\n\n"
+        output += f"**Location:** `{os.path.abspath(DOCUMENTS_DIR)}`\n\n"
+        
+        # Group files by type
+        supported_files = [f for f in files if any(f.endswith(ext) for ext in ['.txt', '.pdf', '.docx'])]
+        other_files = [f for f in files if f not in supported_files]
+        
+        if supported_files:
+            output += "**Supported Files (can be added to RAG):**\n"
+            for f in sorted(supported_files):
+                file_path = os.path.join(DOCUMENTS_DIR, f)
+                file_size = os.path.getsize(file_path)
+                size_str = f"{file_size / 1024:.1f} KB" if file_size < 1024*1024 else f"{file_size / (1024*1024):.1f} MB"
+                output += f"  • `{f}` ({size_str})\n"
+            output += "\n"
+        
+        if other_files:
+            output += "**Other Files:**\n"
+            for f in sorted(other_files):
+                file_path = os.path.join(DOCUMENTS_DIR, f)
+                file_size = os.path.getsize(file_path)
+                size_str = f"{file_size / 1024:.1f} KB" if file_size < 1024*1024 else f"{file_size / (1024*1024):.1f} MB"
+                output += f"  • `{f}` ({size_str})\n"
+        
+        if doc_memory.documents_loaded:
+            output += f"\n✅ **RAG Status:** Documents are indexed and ready to query."
+        else:
+            output += f"\n⚠️ **RAG Status:** No documents indexed yet. Upload files and click 'Process' to add them to RAG."
+        
+        return output
+    except Exception as e:
+        return f"Error listing documents: {str(e)}"
+
+
+def upload_and_refresh(files):
+    """Upload documents and return both status and updated file list"""
+    status = upload_documents(files)
+    file_list = list_documents()
+    return status, file_list
+
+
 # Create Gradio interface
 with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
     gr.Markdown("# 🤖 JARVIS - Your Unified Local AI Agent")
@@ -756,21 +509,166 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
     
     with gr.Tab("💬 Chat"):
         chatbot = gr.Chatbot(
-            label="JARVIS Assistant"
+            label="JARVIS Assistant",
+            height=500
         )
         
-        # Unified multimodal input (text + images in one field)
+        # Conversation mode state (hidden)
+        conversation_mode = gr.State(value=False)
+        
+        # Unified multimodal input (text + images)
         multimodal_input = gr.MultimodalTextbox(
             file_types=["image"],
             show_label=False,
             placeholder="Type your message here... You can paste images from clipboard or drag and drop them.",
         )
         
+        # Simple bottom row: mic button and send button
         with gr.Row():
-            clear_btn = gr.Button("Clear Chat", scale=1)
+            mic_btn = gr.Button("🎤", variant="secondary", size="sm", scale=0, min_width=50)
+            recording_status = gr.State(value=False)
+            send_btn = gr.Button("Send", variant="primary", size="lg", scale=1)
+            clear_btn = gr.Button("Clear", variant="secondary", size="sm", scale=0, min_width=70)
         
-        multimodal_input.submit(chat, inputs=[multimodal_input, chatbot], outputs=[chatbot, multimodal_input])
-        clear_btn.click(lambda: ([], None), None, outputs=[chatbot, multimodal_input])
+        # Audio output for auto-play TTS
+        tts_output = gr.Audio(
+            type="filepath", 
+            visible=True,
+            autoplay=True,
+            label="🔊 Voice Response"
+        )
+        
+        # Conversation mode toggle
+        conversation_toggle = gr.Checkbox(
+            label="🎙️ Voice Responses",
+            value=False
+        )
+        
+        # Event handlers
+        def record_audio_direct(history, is_conv_mode):
+            """Record audio directly using pyaudio when mic button clicked"""
+            global conversation_mode_active
+            conversation_mode_active = is_conv_mode
+            
+            if history is None:
+                history = []
+            
+            try:
+                import pyaudio
+                import wave
+                
+                CHUNK = 1024
+                FORMAT = pyaudio.paInt16
+                CHANNELS = 1
+                RATE = 16000
+                
+                output_path = os.path.join(tempfile.gettempdir(), f"jarvis_voice_{int(time.time())}.wav")
+                
+                print(f"🎤 Starting recording for {RECORD_SECONDS} seconds (reduced for speed)...")
+                
+                p = pyaudio.PyAudio()
+                stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+                
+                frames = []
+                for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+                    data = stream.read(CHUNK)
+                    frames.append(data)
+                
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
+                
+                # Save recording
+                wf = wave.open(output_path, 'wb')
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(p.get_sample_size(FORMAT))
+                wf.setframerate(RATE)
+                wf.writeframes(b''.join(frames))
+                wf.close()
+                
+                time.sleep(0.1)
+                
+                if not os.path.exists(output_path):
+                    raise Exception(f"Recording file was not created: {output_path}")
+                
+                file_size = os.path.getsize(output_path)
+                if file_size == 0:
+                    raise Exception(f"Recording file is empty: {output_path}")
+                
+                print(f"✅ Recording saved to: {output_path} ({len(frames) * CHUNK / RATE:.1f} seconds, {file_size / 1024:.1f} KB)")
+                
+                history.append({"role": "assistant", "content": "🎤 Processing audio... (this may take 10-30 seconds)"})
+                
+                result = process_voice_input(output_path, history)
+                
+                if len(history) > 0 and history[-1].get("content") == "🎤 Processing audio... (this may take 10-30 seconds)":
+                    history.pop()
+                
+                return result
+                
+            except ImportError:
+                if history is None:
+                    history = []
+                history.append({"role": "user", "content": "🎤 [Voice input]"})
+                history.append({"role": "assistant", "content": "Error: pyaudio not installed. Install with: pip install pyaudio"})
+                return history, None, None
+            except Exception as e:
+                if history is None:
+                    history = []
+                history.append({"role": "user", "content": "🎤 [Voice input]"})
+                history.append({"role": "assistant", "content": f"Error recording audio: {str(e)}"})
+                print(f"❌ Recording error: {e}")
+                return history, None, None
+        
+        def process_text_input(input_data, history, is_conv_mode):
+            """Process text/image input"""
+            global conversation_mode_active
+            conversation_mode_active = is_conv_mode
+            print(f"🔍 process_text_input: is_conv_mode={is_conv_mode}, setting conversation_mode_active={conversation_mode_active}")
+            
+            if input_data:
+                return chat(input_data, history)
+            return history, None, None
+        
+        # Mic button starts recording immediately
+        mic_btn.click(
+            record_audio_direct,
+            inputs=[chatbot, conversation_mode],
+            outputs=[chatbot, multimodal_input, tts_output]
+        )
+        
+        # Send button for text/image
+        send_btn.click(
+            process_text_input,
+            inputs=[multimodal_input, chatbot, conversation_mode],
+            outputs=[chatbot, multimodal_input, tts_output]
+        )
+        
+        # Enter key also sends
+        multimodal_input.submit(
+            process_text_input,
+            inputs=[multimodal_input, chatbot, conversation_mode],
+            outputs=[chatbot, multimodal_input, tts_output]
+        )
+        
+        # Conversation mode toggle
+        def update_conversation_mode(checked):
+            global conversation_mode_active
+            conversation_mode_active = checked
+            print(f"🔍 Checkbox changed: conversation_mode_active set to {checked}")
+            return checked
+        
+        conversation_toggle.change(
+            update_conversation_mode,
+            inputs=[conversation_toggle],
+            outputs=[conversation_mode]
+        )
+        
+        clear_btn.click(
+            lambda: ([], False),
+            None,
+            outputs=[chatbot, conversation_mode]
+        )
     
     with gr.Tab("📄 Documents"):
         gr.Markdown("## Upload Documents")
@@ -784,7 +682,16 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
         upload_btn = gr.Button("Process", variant="primary")
         upload_status = gr.Textbox(label="Status", interactive=False)
         
-        upload_btn.click(upload_documents, inputs=[file_upload], outputs=[upload_status])
+        gr.Markdown("---")
+        gr.Markdown("## Existing Documents")
+        gr.Markdown("View all files in your documents directory.")
+        
+        with gr.Row():
+            refresh_btn = gr.Button("🔄 Refresh List", variant="secondary")
+            file_list = gr.Markdown(label="Files", value=list_documents())
+        
+        refresh_btn.click(list_documents, None, outputs=[file_list])
+        upload_btn.click(upload_and_refresh, inputs=[file_upload], outputs=[upload_status, file_list])
     
     with gr.Tab("ℹ️ Info"):
         gr.Markdown("""
@@ -806,9 +713,21 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
         - Upload files in Documents tab
         - "What does my contract say about X?"
         
+        **📁 File Management**
+        - "Create a file called notes.txt with the content..."
+        - "Read the file example.txt"
+        - "List all my files"
+        - Created files are automatically added to RAG (if .txt, .pdf, or .docx)
+        
         **🖥️ Computer Control**
         - "Open browser to google.com"
         - "Open Google Sheets and click on the word Bills"
+        
+        **🎤 Voice Input & Output**
+        - **Voice Input Mode**: Click the microphone button to speak your message (STT only)
+        - **Conversation Mode**: Toggle conversation mode for voice responses (STT + TTS)
+        - Speak naturally - JARVIS uses Whisper for accurate transcription
+        - Responses can be spoken back using text-to-speech
         
         ## Tips
         - Keep search queries SHORT (2-5 words work best)
@@ -817,20 +736,18 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
         - Vision processing works with images and screenshots
         """)
 
-# ==================== LAUNCH ====================
 
+# Launch
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("🚀 Starting JARVIS...")
-    print(f"📍 Model: {OLLAMA_MODEL}")
+    print(f"📍 LLM Model: {OLLAMA_MODEL}")
+    print(f"📍 Embedding Model: {OLLAMA_EMBEDDING_MODEL}")
     print(f"📍 Ollama: {OLLAMA_BASE_URL}")
     print("="*60 + "\n")
     
     os.makedirs(CHROMA_DB_DIR, exist_ok=True)
     os.makedirs(DOCUMENTS_DIR, exist_ok=True)
     
-    demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        share=False
-    )
+    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
+

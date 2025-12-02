@@ -1,50 +1,29 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+# JARVIS - Whitelist approach: Ignore everything, then keep only what we need
 
-# JARVIS specific
-chroma_db/
-documents/
-*.png
-screenshot*.png
+# Ignore everything by default
+*
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# But keep these essential files and directories
+!.gitignore
+!README.md
+!requirements.txt
+!jarvis_agent.py
+!launch_jarvis.bat
+!launch_jarvis.ps1
 
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
+# Keep all Python module files
+!*.py
 
-# Logs
-*.log
+# Keep .git directory (needed for version control)
+!.git/
+!.git/**
 
-# Environment variables
-.env
-.env.local
+# Keep .cursor directory (for Cursor IDE configuration)
+!.cursor/
+!.cursor/**
 
+# Keep any other configuration files you might add
+!.github/
+!.github/**
+
+# Note: chroma_db/, documents/, __pycache__/, and all temp files are automatically ignored
