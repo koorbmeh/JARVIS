@@ -19,7 +19,8 @@ A single, unified AI agent that combines web search, document memory (RAG), and 
 - **Python 3.11+** (Windows Store Python or standard installation)
 - **Ollama** installed and running locally
 - **Default web browser** (for opening URLs - uses your system's default browser)
-- **qwen3-vl:8b-instruct model** in Ollama (main LLM with vision support)
+- **qwen2.5:7b model** in Ollama (fast text/reasoning model for chained approach)
+- **qwen3-vl:4b model** in Ollama (lightweight vision model for chained approach)
 - **nomic-embed-text model** in Ollama (for document embeddings/RAG)
 
 ## 🚀 Installation
@@ -29,12 +30,27 @@ A single, unified AI agent that combines web search, document memory (RAG), and 
 Download and install [Ollama](https://ollama.ai/), then pull the required models:
 
 ```powershell
-# Main LLM model (supports vision)
-ollama pull qwen3-vl:8b-instruct
+# Fast text model (for chained approach) - REQUIRED
+ollama pull qwen2.5:7b
 
-# Embedding model for RAG (document memory)
+# Lightweight vision model (for chained approach) - REQUIRED
+ollama pull qwen3-vl:4b
+
+# Embedding model for RAG (document memory) - REQUIRED
 ollama pull nomic-embed-text
 ```
+
+**Optional - Alternative Integrated VLM Approach:**
+If you prefer to use a single integrated vision-language model instead of the chained approach, you can use `qwen3-vl:8b-instruct`:
+
+```powershell
+# Integrated VLM (alternative to chained models - OPTIONAL)
+ollama pull qwen3-vl:8b-instruct
+```
+
+Then set `USE_CHAINED_MODELS = False` in `config.py` and ensure `OLLAMA_MODEL = "qwen3-vl:8b-instruct"`.
+
+**Note**: The chained approach (default) is 2-3x faster for most tasks. The integrated VLM is simpler but slower.
 
 Verify the models are installed:
 
@@ -42,7 +58,7 @@ Verify the models are installed:
 ollama list
 ```
 
-You should see both `qwen3-vl:8b-instruct` and `nomic-embed-text` in the list.
+For the default chained setup, you should see `qwen2.5:7b`, `qwen3-vl:4b`, and `nomic-embed-text`.
 
 ### 2. Install Python Dependencies
 
@@ -131,33 +147,29 @@ The web interface will be available at: **http://127.0.0.1:7860**
 
 ## ⚡ Performance Optimization
 
-If JARVIS feels slow (30-60s responses on RTX 2060 6GB VRAM or similar), here are proven fixes:
+JARVIS uses the chained models approach by default for 2-3x faster performance. If you're experiencing slowness or want to optimize further, here are proven fixes:
 
-### 1. Chained Models Approach (Recommended for Speed - 2-3x Faster)
+### 1. Chained Models Approach (Default - 2-3x Faster)
 
 **The Problem**: Integrated VLMs like `qwen3-vl:8b-instruct` process vision even for text queries, adding 20-40% overhead. This makes them slower for most JARVIS tasks (80% are text/tool queries, only 20% need vision).
 
-**The Solution**: Chain a fast text model (DeepSeek-R1) with a lightweight vision model. This gives:
+**The Solution**: Chain a fast text model with a lightweight vision model. This gives:
 - **50-80 t/s for text/tools** (vs 30-50 t/s with integrated VLM)
 - **5-15s average response** (vs 15-30s with integrated VLM)
 - **Vision only when needed** (adds ~0.3-0.5s per image)
 
-**Setup**:
+**Default Configuration**:
+The chained approach is enabled by default (`USE_CHAINED_MODELS = True` in `config.py`). Simply pull the required models (see Installation section):
+- `qwen2.5:7b` - Text/reasoning core (fast for tools, ~4GB VRAM)
+- `qwen3-vl:4b` - Lightweight vision (on-demand, ~2GB VRAM)
 
-```powershell
-# Pull the models
-ollama pull deepseek-r1:32b        # Text/reasoning core (fast for tools)
-ollama pull qwen3-vl:4b            # Lightweight vision (on-demand)
-```
-
-Then update `config.py`:
+**For Larger GPUs (16GB+ VRAM)**:
+You can use `deepseek-r1:32b` as the text model for even better reasoning:
 ```python
 USE_CHAINED_MODELS = True
-TEXT_MODEL = "deepseek-r1:32b"
+TEXT_MODEL = "deepseek-r1:32b"  # Requires 20GB+ VRAM
 VISION_MODEL = "qwen3-vl:4b"
 ```
-
-**Note**: Chained models require code changes to `llm_setup.py` (see Advanced section below). For now, JARVIS uses the integrated VLM approach.
 
 **Expected gains**: 2-3x faster responses (5-15s instead of 15-30s for text queries)
 
@@ -183,48 +195,17 @@ python jarvis_agent.py
 - **Aim for <80% VRAM usage** - if over, use a smaller quantized model
 - **Vision caching is enabled by default** - screenshots are cached to avoid redundant OCR
 
-### 4. Advanced: Implement Chained Models (Code Changes Required)
+### 4. Advanced: Custom Model Selection
 
-To enable the chained approach (DeepSeek-R1 + lightweight vision), you need to modify `llm_setup.py`:
+The chained models approach is already fully implemented in the codebase. You can customize which models to use by editing `config.py`:
 
-1. **Update imports**:
-```python
-from langchain_community.chat_models import ChatOllama
-from langchain.schema import HumanMessage
-```
-
-2. **Add vision tool** (in `llm_setup.py`):
-```python
-from config import USE_CHAINED_MODELS, TEXT_MODEL, VISION_MODEL
-
-if USE_CHAINED_MODELS:
-    # Create separate LLMs
-    text_llm = ChatOllama(model=TEXT_MODEL, temperature=0.2)
-    vision_llm = ChatOllama(model=VISION_MODEL)
-    
-    # Vision tool (called only when needed)
-    def vision_analyze(image_path: str, query: str) -> str:
-        messages = [HumanMessage(content=[
-            {"type": "image_url", "image_url": {"url": f"file://{image_path}"}},
-            {"type": "text", "text": query}
-        ])]
-        return vision_llm.invoke(messages).content
-    
-    # Add vision tool to tools list
-    tools.append(Tool(
-        name="VisionAnalyze",
-        func=lambda args: vision_analyze(*args.split(',', 1)),
-        description="Use ONLY if query involves images/UI/screenshots. Input: 'path/to/image.png, Analyze for hotkeys'"
-    ))
-    
-    # Use text_llm for agent
-    llm = text_llm
-else:
-    # Default: integrated VLM
-    llm = OllamaLLM(model=OLLAMA_MODEL, ...)
-```
-
-3. **Update agent prompt** to route vision queries to VisionAnalyze tool
+- **For RTX 2060 (6GB VRAM)**: Use `qwen2.5:7b` + `qwen3-vl:4b` (default in config)
+- **For larger GPUs (16GB+ VRAM)**: You can use `deepseek-r1:32b` as the text model for better reasoning:
+  ```python
+  USE_CHAINED_MODELS = True
+  TEXT_MODEL = "deepseek-r1:32b"  # Requires 20GB+ VRAM
+  VISION_MODEL = "qwen3-vl:4b"
+  ```
 
 **Expected gains**: 2-3x speed improvement on RTX 2060 (5-15s for text, +0.5s for vision)
 
@@ -250,10 +231,14 @@ On RTX 5070Ti (16GB VRAM) or similar:
 
 Edit `config.py` to customize:
 
-- **Ollama LLM Model**: Change `OLLAMA_MODEL` (default: `qwen3-vl:8b-instruct`)
-- **Ollama Embedding Model**: Change `OLLAMA_EMBEDDING_MODEL` (default: `nomic-embed-text`)
-- **Ollama URL**: Change `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- **ChromaDB Directory**: Change `CHROMA_DB_DIR` (default: `./chroma_db`)
+- **Chained Models**: `USE_CHAINED_MODELS = True` (default: enabled - uses `qwen2.5:7b` + `qwen3-vl:4b`)
+  - Set to `False` to use integrated VLM (`qwen3-vl:8b-instruct`) instead
+- **Text Model**: `TEXT_MODEL = "qwen2.5:7b"` (default: for chained approach)
+- **Vision Model**: `VISION_MODEL = "qwen3-vl:4b"` (default: for chained approach)
+- **Ollama LLM Model**: `OLLAMA_MODEL = "qwen3-vl:8b-instruct"` (used when `USE_CHAINED_MODELS = False`)
+- **Ollama Embedding Model**: `OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"` (default: for RAG)
+- **Ollama URL**: `OLLAMA_BASE_URL = "http://localhost:11434"` (default)
+- **ChromaDB Directory**: `CHROMA_DB_DIR = "./chroma_db"` (default)
 - **Vision Caching**: `ENABLE_VISION_CACHE = True` (default: enabled for faster screenshot processing)
 - **Conversation Logging**: `ENABLE_CONVERSATION_LOGGING = True` (default: enabled - saves all conversations to `documents/conversation_logs/`)
 - **Auto-add to RAG**: `AUTO_ADD_CONVERSATIONS_TO_RAG = True` (default: enabled - automatically makes conversation logs searchable)
@@ -334,7 +319,7 @@ The agent follows a "Thought → Action → Observation" loop until it has enoug
 ## 📝 Notes
 
 - **Response Time**: 30-60 seconds per query is normal (local processing on RTX 2060)
-- **VRAM Usage**: ~5.5GB / 6GB with qwen3-vl:8b-instruct
+- **VRAM Usage**: ~6GB / 6GB with chained models (qwen2.5:7b + qwen3-vl:4b), or ~5.5GB with integrated VLM (qwen3-vl:8b-instruct)
 - **Browser Automation**: Opens URLs in new tabs in your default browser (same browser as the Gradio interface)
 - **Document Storage**: Uploaded documents are stored in ChromaDB and persist between sessions
 

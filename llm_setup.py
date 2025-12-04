@@ -285,4 +285,3 @@ agent_executor = AgentExecutor(
     max_execution_time=600,  # Timeout after 10 minutes (600s) to allow time for complex reasoning
     memory=memory  # Add conversation memory
 )
-

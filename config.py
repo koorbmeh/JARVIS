@@ -68,4 +68,3 @@ CONVERSATION_HISTORY_DAYS = 7  # Number of days of conversation history to load 
 # Self-Reflection (learns from errors and slow responses)
 ENABLE_SELF_REFLECTION = True  # Log errors/slow responses and generate improvement examples
 SLOW_RESPONSE_THRESHOLD = 15.0  # Seconds - responses slower than this trigger reflection
-
