@@ -57,7 +57,14 @@ frontend/build/
 frontend/.cache/
 frontend/.env*
 
-# Note: chroma_db/, documents/, __pycache__/, and all temp files are automatically ignored
+# Python cache files (should never be committed)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Note: chroma_db/, documents/, and all temp files are automatically ignored
 
 # Debug logs (can be large, don't commit)
 debug_logs/
