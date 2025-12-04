@@ -88,7 +88,18 @@ def web_search_tool(query: str) -> str:
                             'bloomberg.com', 'reuters.com', 'marketwatch.com']
         
         # Try to fetch actual content from reputable sites first
+        # For weather queries, skip deep page fetching to avoid timeouts
+        weather_keywords = ['weather', 'forecast', 'temperature', 'rain', 'snow', 'sunny', 'cloudy']
+        is_weather_query = any(keyword in query.lower() for keyword in weather_keywords)
+        
+        # Limit page fetching for weather queries (they're usually in snippets)
+        max_pages_to_fetch = 2 if is_weather_query else 3
+        
+        pages_fetched = 0
         for result in results:
+            if pages_fetched >= max_pages_to_fetch:
+                break
+                
             try:
                 url = result['url']
                 # Skip ad/redirect URLs
@@ -100,10 +111,16 @@ def web_search_tool(query: str) -> str:
                 # Check if it's a reputable domain
                 is_reputable = any(domain in url.lower() for domain in reputable_domains)
                 
+                # For weather queries, only fetch if it's a weather site or if we haven't fetched any yet
+                if is_weather_query and pages_fetched > 0 and 'weather' not in url.lower():
+                    continue  # Skip non-weather sites after first fetch
+                
                 # Prioritize reputable sites, but also try others if no reputable ones found
                 if is_reputable or len([r for r in results if any(d in r.get('url', '').lower() for d in reputable_domains)]) == 0:
                     print(f"   Fetching content from: {url}")
-                    page_response = requests.get(url, headers=headers, timeout=WEB_SEARCH_TIMEOUT, allow_redirects=True)
+                    # Use shorter timeout for weather queries
+                    timeout = 10 if is_weather_query else WEB_SEARCH_TIMEOUT
+                    page_response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
                     if page_response.status_code == 200:
                         page_soup = BeautifulSoup(page_response.text, 'html.parser')
                         # Extract text content (remove scripts, styles)
@@ -111,8 +128,11 @@ def web_search_tool(query: str) -> str:
                             script.decompose()
                         page_text = page_soup.get_text(separator=' ', strip=True)
                         # Get less content for speed
-                        page_text = ' '.join(page_text.split()[:WEB_SEARCH_MAX_CONTENT])
+                        # Use less content for weather queries (snippets usually have the info)
+                        max_words = 200 if is_weather_query else WEB_SEARCH_MAX_CONTENT
+                        page_text = ' '.join(page_text.split()[:max_words])
                         result['page_content'] = page_text
+                        pages_fetched += 1
                         
                         # Only attempt price extraction if this is a price-related query
                         if is_price_query:
@@ -328,8 +348,23 @@ def computer_control_tool(action: str) -> str:
         if action.startswith("open browser:"):
             url = action.replace("open browser:", "").strip()
             
+            # Handle Google services - map to correct URLs
+            url_lower = url.lower()
+            if "google sheets" in url_lower or ("sheets" in url_lower and "google" in url_lower):
+                url = "https://sheets.google.com"
+            elif "google docs" in url_lower or ("docs" in url_lower and "google" in url_lower and "sheets" not in url_lower):
+                url = "https://docs.google.com"
+            elif "google drive" in url_lower or ("drive" in url_lower and "google" in url_lower):
+                url = "https://drive.google.com"
+            elif "google slides" in url_lower or ("slides" in url_lower and "google" in url_lower):
+                url = "https://slides.google.com"
+            elif "google calendar" in url_lower or ("calendar" in url_lower and "google" in url_lower):
+                url = "https://calendar.google.com"
+            elif "google" in url_lower and not url_lower.startswith("http"):
+                # Generic "google" without specific service - default to Google homepage
+                url = "https://www.google.com"
             # Handle YouTube search requests - check if user wants to search YouTube
-            if "youtube" in url.lower():
+            elif "youtube" in url_lower:
                 # Check if there's a search request
                 if "search for" in url.lower():
                     # Extract search query using regex
@@ -357,7 +392,7 @@ def computer_control_tool(action: str) -> str:
                     return f"Error: Invalid URL format: {url}"
             
             # Use Python's built-in webbrowser module to open in default browser
-            # This opens a new tab in the user's default browser (same as the Gradio interface)
+            # This opens a new tab in the user's default browser
             try:
                 webbrowser.open(url, new=2)  # new=2 opens in a new tab if possible
                 # Give the browser a moment to start loading

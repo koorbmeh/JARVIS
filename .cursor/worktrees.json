@@ -17,11 +17,17 @@
   },
   "indexing": {
     "include": [
-      "jarvis_agent.py",
+      "backend/main.py",
+      "config.py",
+      "llm_setup.py",
+      "tools.py",
+      "voice.py",
+      "vision.py",
+      "rag.py",
       "requirements.txt",
       "README.md",
       "launch_jarvis.bat",
-      "launch_jarvis.ps1",
+      "stop_jarvis.bat",
       ".gitignore"
     ],
     "exclude": [
@@ -48,28 +54,32 @@
   },
   "context": {
     "primaryFiles": [
-      "jarvis_agent.py"
+      "backend/main.py",
+      "config.py",
+      "llm_setup.py"
     ],
     "keySections": {
       "configuration": {
-        "file": "jarvis_agent.py",
-        "lines": "65-70",
-        "description": "Main configuration constants (models, paths, URLs)"
+        "file": "config.py",
+        "lines": "1-71",
+        "description": "Main configuration constants (models, paths, URLs, timeouts)"
+      },
+      "backendAPI": {
+        "file": "backend/main.py",
+        "lines": "1-773",
+        "description": "FastAPI backend with chat, voice, vision, and WebSocket endpoints"
       },
       "voiceProcessing": {
-        "file": "jarvis_agent.py",
-        "lines": "200-300",
+        "file": "voice.py",
         "description": "Voice input/output processing (Whisper STT, TTS)"
       },
       "tools": {
-        "file": "jarvis_agent.py",
-        "lines": "207-600",
+        "file": "tools.py",
         "description": "Tool definitions (WebSearch, DocumentQuery, FileManagement, ComputerControl)"
       },
-      "gradioInterface": {
-        "file": "jarvis_agent.py",
-        "lines": "1200-1400",
-        "description": "Gradio UI setup and event handlers"
+      "llmSetup": {
+        "file": "llm_setup.py",
+        "description": "Ollama connection, agent creation, and tool registration"
       }
     },
     "dependencies": {
@@ -108,7 +118,7 @@
         },
         "codeAgent": {
           "responsibility": "Python code changes, logic implementation",
-          "scope": "jarvis_agent.py, requirements.txt"
+          "scope": "backend/main.py, tools.py, voice.py, vision.py, llm_setup.py, config.py, requirements.txt"
         },
         "docsAgent": {
           "responsibility": "Documentation updates, README maintenance",
@@ -142,16 +152,18 @@
       }
     },
     "focusAreas": [
+      "FastAPI backend API endpoints",
+      "React frontend UI/UX",
       "Voice processing and transcription",
       "File handling and RAG integration",
-      "UI/UX improvements",
       "Error handling and debugging",
       "Performance optimization"
     ],
     "commonTasks": [
+      "Adding new API endpoints",
       "Adding new tools or capabilities",
       "Fixing voice transcription issues",
-      "Improving UI/UX",
+      "Improving React frontend UI/UX",
       "Debugging file access problems",
       "Optimizing performance"
     ],

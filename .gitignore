@@ -5,25 +5,59 @@
 
 # But keep these essential files and directories
 !.gitignore
-!README.md
-!requirements.txt
-!jarvis_agent.py
-!launch_jarvis.bat
-!launch_jarvis.ps1
+!.git/
+!.git/**
+!.cursor/
+!.cursor/**
+!.github/
+!.github/**
 
 # Keep all Python module files
 !*.py
 
-# Keep .git directory (needed for version control)
-!.git/
-!.git/**
+# Keep configuration and documentation files
+!*.md
+!*.txt
+!*.json
+!*.bat
 
-# Keep .cursor directory (for Cursor IDE configuration)
-!.cursor/
-!.cursor/**
+# Keep backend directory and all its contents
+!backend/
+!backend/**
+!backend/**/*
 
-# Keep any other configuration files you might add
-!.github/
-!.github/**
+# Keep frontend directory structure
+!frontend/
+!frontend/package.json
+!frontend/package-lock.json
+
+# Keep frontend public directory
+!frontend/public/
+!frontend/public/**
+!frontend/public/**/*
+
+# Keep frontend src directory
+!frontend/src/
+!frontend/src/**
+!frontend/src/**/*
+
+# Keep all file types in frontend/src
+!frontend/src/**/*.js
+!frontend/src/**/*.jsx
+!frontend/src/**/*.css
+!frontend/src/**/*.json
+
+# Keep HTML files in frontend/public
+!frontend/public/**/*.html
+!frontend/public/**/*.json
+
+# Explicitly ignore node_modules and build artifacts (after whitelisting)
+frontend/node_modules/
+frontend/build/
+frontend/.cache/
+frontend/.env*
 
 # Note: chroma_db/, documents/, __pycache__/, and all temp files are automatically ignored
+
+# Debug logs (can be large, don't commit)
+debug_logs/

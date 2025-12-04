@@ -14,7 +14,10 @@ beautifulsoup4
 requests
 
 # Web Interface
-gradio
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
 
 # Computer Control
 PyAutoGUI==0.9.54

@@ -202,29 +202,54 @@ def initialize_tts():
 
 def transcribe_audio(audio_path: str) -> str:
     """Transcribe audio file to text using Whisper (faster-whisper if available, else openai-whisper)"""
+    try:
+        from debug_logger import log_debug, log_info, log_error
+    except ImportError:
+        # Fallback if debug_logger not available
+        def log_debug(*args, **kwargs): pass
+        def log_info(*args, **kwargs): pass
+        def log_error(*args, **kwargs): pass
+    
+    log_debug("transcribe_audio called", audio_path=audio_path)
+    
     if not WHISPER_AVAILABLE:
-        return "Error: Whisper not available. Install with: pip install faster-whisper (recommended) or openai-whisper"
+        error_msg = "Error: Whisper not available. Install with: pip install faster-whisper (recommended) or openai-whisper"
+        log_error("Whisper not available")
+        return error_msg
     
     try:
         if FASTER_WHISPER_AVAILABLE:
             if faster_whisper_model is None:
+                log_info("faster_whisper_model is None, initializing...")
                 if not initialize_whisper():
-                    return "Error: Could not initialize faster-whisper model"
+                    error_msg = "Error: Could not initialize faster-whisper model"
+                    log_error("Failed to initialize faster-whisper model")
+                    return error_msg
+                log_debug("faster_whisper_model initialized", model_loaded=faster_whisper_model is not None)
         else:
             if whisper_model is None:
+                log_info("whisper_model is None, initializing...")
                 if not initialize_whisper():
-                    return "Error: Could not initialize Whisper model"
+                    error_msg = "Error: Could not initialize Whisper model"
+                    log_error("Failed to initialize Whisper model")
+                    return error_msg
         
+        log_info("Starting transcription", audio_path=audio_path)
         print(f"🎤 Transcribing audio from: {audio_path}")
         
         # Verify file exists and is readable
         if not os.path.exists(audio_path):
-            return f"Error: Audio file not found at: {audio_path}"
+            error_msg = f"Error: Audio file not found at: {audio_path}"
+            log_error("Audio file not found", audio_path=audio_path)
+            return error_msg
         
         # Check file size (should be > 0)
         file_size = os.path.getsize(audio_path)
         if file_size == 0:
-            return f"Error: Audio file is empty (0 bytes)"
+            error_msg = f"Error: Audio file is empty (0 bytes)"
+            log_error("Audio file is empty", audio_path=audio_path)
+            return error_msg
+        log_debug("Audio file verified", size=file_size, size_kb=file_size/1024)
         print(f"   File size: {file_size / 1024:.1f} KB")
         
         # Get absolute path to avoid path issues
@@ -296,6 +321,7 @@ def transcribe_audio(audio_path: str) -> str:
                 result = {"text": transcribed_text}
                 
                 elapsed = time.time() - start_time
+                log_info("Transcription successful", elapsed=elapsed, text_length=len(transcribed_text))
                 print(f"   ✅ faster-whisper completed in {elapsed:.1f} seconds (much faster!)")
             else:
                 # Use openai-whisper (fallback)
@@ -391,12 +417,13 @@ def transcribe_audio(audio_path: str) -> str:
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
+        log_error("Exception in transcribe_audio", error=e, traceback=error_details)
         print(f"❌ Transcription error details:\n{error_details}")
         return f"Error transcribing audio: {str(e)}"
 
 
 def text_to_speech(text: str, output_path: str = None) -> str:
-    """Convert text to speech and return audio file path (absolute path for Gradio)"""
+    """Convert text to speech and return audio file path (absolute path)"""
     if not TTS_AVAILABLE:
         return None
     
@@ -404,7 +431,7 @@ def text_to_speech(text: str, output_path: str = None) -> str:
         if output_path is None:
             output_path = os.path.join(tempfile.gettempdir(), f"jarvis_tts_{int(time.time())}.wav")
         
-        # Ensure absolute path for Gradio
+        # Ensure absolute path
         output_path = os.path.abspath(output_path)
         
         # Skip TTS for very short responses (not worth the delay)

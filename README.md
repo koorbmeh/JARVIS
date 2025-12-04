@@ -12,11 +12,12 @@ A single, unified AI agent that combines web search, document memory (RAG), and 
 - **💾 Conversation Logging** - All conversations are automatically saved and searchable via RAG for future reference
 - **🖥️ Computer Control** - Automate browser actions, find and click text, take screenshots, type text
 - **🧠 Automatic Tool Selection** - JARVIS automatically decides which tool to use
-- **🌐 Unified Web Interface** - Clean Gradio interface with unified text/image input at http://127.0.0.1:7860
+- **🌐 Modern Web Interface** - FastAPI + React interface with Cursor-like design at http://localhost:3000
 
 ## 📋 Prerequisites
 
 - **Python 3.11+** (Windows Store Python or standard installation)
+- **Node.js 16+** - Install from https://nodejs.org/ (required for React frontend)
 - **Ollama** installed and running locally
 - **Default web browser** (for opening URLs - uses your system's default browser)
 - **qwen2.5:7b model** in Ollama (fast text/reasoning model for chained approach)
@@ -66,9 +67,17 @@ For the default chained setup, you should see `qwen2.5:7b`, `qwen3-vl:4b`, and `
 pip install -r requirements.txt
 ```
 
+### 3. Install Frontend Dependencies
+
+```powershell
+cd frontend
+npm install
+cd ..
+```
+
 **Note**: On Windows, `pywin32` is recommended (but optional) for better multi-monitor support when taking screenshots. It's included in requirements.txt but will only install on Windows.
 
-### 3. (Optional) Install Tesseract OCR for Text Finding
+### 4. (Optional) Install Tesseract OCR for Text Finding
 
 For optimal text finding in screenshots, install Tesseract OCR:
 
@@ -82,7 +91,7 @@ For optimal text finding in screenshots, install Tesseract OCR:
 
 **Note**: If Tesseract is not installed or not in PATH, JARVIS will automatically fall back to using the vision model to locate text, which may be less accurate but will still work. The vision model fallback is fully functional and will attempt to find and click text based on visual analysis.
 
-### 4. (Optional) Voice Capabilities
+### 5. (Optional) Voice Capabilities
 
 For voice input and output, install the voice dependencies:
 
@@ -97,32 +106,46 @@ pip install openai-whisper pyaudio soundfile pyttsx3
 
 Voice features are optional - JARVIS works perfectly fine with text-only input.
 
-### 5. Ready to Go!
+### 6. Ready to Go!
 
 JARVIS uses your system's default browser to open URLs, so no additional browser setup is needed.
 
 ## 🎯 Quick Start
 
-### Option 1: Double-Click Launcher (Windows)
+### Option 1: Double-Click Launcher (Windows - Recommended)
 
-Simply double-click `launch_jarvis.bat` to start JARVIS.
+Simply double-click `launch_jarvis.bat` to start JARVIS. The script will:
+- Start the FastAPI backend (http://127.0.0.1:8000)
+- Start the React frontend (http://localhost:3000)
+- Wait for both to be ready
+- Open your browser automatically
 
-### Option 2: Command Line
+### Option 2: Manual Start
 
+**Terminal 1 - Backend:**
 ```powershell
-python jarvis_agent.py
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The web interface will be available at: **http://127.0.0.1:7860**
+**Terminal 2 - Frontend:**
+```powershell
+cd frontend
+npm start
+```
+
+Then open http://localhost:3000 in your browser.
+
 
 ## 📖 Usage
 
 ### Web Interface
 
-1. Open your browser to http://127.0.0.1:7860
-2. Use the **Chat** tab to interact with JARVIS
-3. Use the **Documents** tab to upload files for RAG
-4. Use the **Info** tab for tips and examples
+1. Open your browser to http://localhost:3000 (or it will open automatically)
+2. Use the chat interface to interact with JARVIS
+3. Upload images by dragging and dropping or pasting from clipboard
+4. Click the microphone button for voice input
+5. Toggle "Voice Responses" for text-to-speech output
+6. Use the "Close JARVIS" button to shut down all services
 
 ### Example Commands
 
@@ -137,7 +160,8 @@ The web interface will be available at: **http://127.0.0.1:7860**
   - Created files are automatically added to RAG (if .txt, .pdf, or .docx)
 - **Computer Control**: 
   - "Open browser to YouTube and search for AI News"
-  - "Open Google Sheets and click on the word 'bills'"
+  - "Open Google Sheets" (correctly opens sheets.google.com)
+  - "Open Google Docs" (correctly opens docs.google.com)
   - "Take a screenshot and find the text 'Submit'"
 - **Voice**: 
   - Click the microphone button and speak your message (Voice Input mode)
@@ -180,13 +204,13 @@ Set environment variable before running JARVIS to offload all layers to GPU:
 **PowerShell:**
 ```powershell
 $env:OLLAMA_NUM_GPU_LAYERS="999"
-python jarvis_agent.py
+launch_jarvis.bat
 ```
 
 **Bash:**
 ```bash
 export OLLAMA_NUM_GPU_LAYERS=999
-python jarvis_agent.py
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ### 3. Hardware Optimizations
@@ -249,15 +273,24 @@ Edit `config.py` to customize:
 
 ```
 JARVIS/
-├── jarvis_agent.py          # Main application
-├── requirements.txt          # Python dependencies
+├── backend/
+│   └── main.py              # FastAPI backend server
+├── frontend/
+│   ├── src/                 # React source files
+│   │   ├── components/      # React components
+│   │   ├── App.js           # Main app component
+│   │   └── index.js         # Entry point
+│   ├── public/              # Static files
+│   └── package.json         # Node.js dependencies
+├── requirements.txt         # Python dependencies
 ├── launch_jarvis.bat        # Windows launcher (double-click)
-├── launch_jarvis.ps1        # PowerShell launcher (with Ollama checks)
-├── README.md                 # This file
-├── chroma_db/                # Vector database (auto-created)
-├── documents/                # Uploaded documents (auto-created)
+├── stop_jarvis.bat          # Stop script
+├── README.md                # This file
+├── chroma_db/               # Vector database (auto-created)
+├── documents/               # Uploaded documents (auto-created)
 │   └── conversation_logs/   # Conversation history logs (auto-created, searchable via RAG)
-└── vision_cache/             # Cached vision results (auto-created)
+├── vision_cache/            # Cached vision results (auto-created)
+└── debug_logs/              # Debug logs (auto-created)
 ```
 
 ## 🔧 Troubleshooting
@@ -271,7 +304,7 @@ Web search uses DuckDuckGo HTML interface. If you get no results:
 
 ### Browser Automation Fails
 
-- JARVIS uses your system's default browser (the same one showing the Gradio interface)
+- JARVIS uses your system's default browser
 - URLs open in new tabs in your existing browser
 - No ChromeDriver or Selenium setup needed
 
@@ -318,10 +351,11 @@ The agent follows a "Thought → Action → Observation" loop until it has enoug
 
 ## 📝 Notes
 
-- **Response Time**: 30-60 seconds per query is normal (local processing on RTX 2060)
+- **Response Time**: 5-15 seconds per query is typical (local processing on RTX 2060 with chained models)
 - **VRAM Usage**: ~6GB / 6GB with chained models (qwen2.5:7b + qwen3-vl:4b), or ~5.5GB with integrated VLM (qwen3-vl:8b-instruct)
-- **Browser Automation**: Opens URLs in new tabs in your default browser (same browser as the Gradio interface)
+- **Browser Automation**: Opens URLs in new tabs in your default browser
 - **Document Storage**: Uploaded documents are stored in ChromaDB and persist between sessions
+- **Shutdown**: Use the "Close JARVIS" button in the web interface or run `stop_jarvis.bat` to shut down all services
 
 ## 🤝 Contributing
 
@@ -333,5 +367,5 @@ This project is provided as-is for personal use.
 
 ---
 
-**Built with**: Python, LangChain, Ollama, Gradio, ChromaDB, PyAutoGUI
+**Built with**: Python, FastAPI, React, LangChain, Ollama, ChromaDB, PyAutoGUI
 
