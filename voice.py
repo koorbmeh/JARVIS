@@ -424,26 +424,42 @@ def transcribe_audio(audio_path: str) -> str:
 
 def text_to_speech(text: str, output_path: str = None) -> str:
     """Convert text to speech and return audio file path (absolute path)"""
+    try:
+        from debug_logger import log_debug, log_info, log_error, log_warning
+    except ImportError:
+        def log_debug(*args, **kwargs): pass
+        def log_info(*args, **kwargs): pass
+        def log_error(*args, **kwargs): pass
+        def log_warning(*args, **kwargs): pass
+    
     if not TTS_AVAILABLE:
+        log_warning("TTS requested but TTS_AVAILABLE is False")
         return None
     
     try:
         if output_path is None:
-            output_path = os.path.join(tempfile.gettempdir(), f"jarvis_tts_{int(time.time())}.wav")
+            import uuid
+            # Use UUID to avoid filename collisions
+            output_path = os.path.join(tempfile.gettempdir(), f"jarvis_tts_{uuid.uuid4().hex}.wav")
         
         # Ensure absolute path
         output_path = os.path.abspath(output_path)
+        log_debug("TTS output path", path=output_path)
         
         # Skip TTS for very short responses (not worth the delay)
         if len(text.strip()) < 20:
+            log_info("Skipping TTS for very short response", text_length=len(text.strip()))
             print(f"⚠️  Skipping TTS for very short response: '{text[:30]}...'")
             return None
         
         # Limit text length to prevent very long TTS generation (300 chars max for speed)
+        original_length = len(text)
         if len(text) > 300:
             text = text[:300] + "..."
+            log_info("Text truncated for TTS", original_length=original_length, truncated_length=300)
             print(f"⚠️  Text truncated to 300 chars for TTS")
         
+        log_info("Generating TTS", text_length=len(text), method=TTS_METHOD)
         print(f"🔊 Generating speech: {text[:50]}...")
         
         if TTS_METHOD == "pyttsx3":
@@ -475,12 +491,15 @@ def text_to_speech(text: str, output_path: str = None) -> str:
             if os.path.exists(output_path):
                 file_size = os.path.getsize(output_path)
                 if file_size > 0:
+                    log_info("TTS file created successfully", path=output_path, size=file_size)
                     print(f"✅ Speech saved to: {output_path} ({file_size} bytes)")
                     return output_path
                 else:
+                    log_error("TTS file created but is empty", path=output_path)
                     print(f"⚠️  TTS file created but is empty")
                     return None
             else:
+                log_error("TTS file was not created", path=output_path)
                 print(f"⚠️  TTS file was not created")
                 return None
         
@@ -501,8 +520,11 @@ def text_to_speech(text: str, output_path: str = None) -> str:
         
         return None
     except Exception as e:
+        log_error("Error generating speech", error=e)
         print(f"❌ Error generating speech: {e}")
         import traceback
+        error_traceback = traceback.format_exc()
+        log_error("TTS traceback", traceback=error_traceback)
         traceback.print_exc()
         return None
 

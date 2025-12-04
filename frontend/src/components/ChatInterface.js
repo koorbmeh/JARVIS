@@ -80,8 +80,23 @@ const ChatInterface = () => {
             const ttsUrl = data.content.startsWith('http') 
               ? data.content 
               : `http://127.0.0.1:8000${data.content}`;
+            console.log('Playing TTS audio (WebSocket):', ttsUrl);
             const audio = new Audio(ttsUrl);
-            audio.play().catch(e => console.error('TTS playback error:', e));
+            audio.onloadeddata = () => {
+              console.log('TTS audio loaded (WebSocket), playing...');
+              audio.play().catch(e => {
+                console.error('TTS playback error (WebSocket):', e);
+                if (e.name === 'NotAllowedError') {
+                  console.warn('Autoplay blocked. User interaction required.');
+                }
+              });
+            };
+            audio.onerror = (e) => {
+              console.error('TTS audio load error (WebSocket):', e);
+            };
+            audio.onended = () => {
+              console.log('TTS playback completed (WebSocket)');
+            };
           }
         } else if (data.type === 'error') {
           setIsProcessing(false);
@@ -222,8 +237,28 @@ const ChatInterface = () => {
         const ttsUrl = data.tts_path.startsWith('http') 
           ? data.tts_path 
           : `http://127.0.0.1:8000${data.tts_path}`;
+        console.log('Playing TTS audio:', ttsUrl);
         const audio = new Audio(ttsUrl);
-        audio.play().catch(e => console.error('TTS playback error:', e));
+        audio.onloadeddata = () => {
+          console.log('TTS audio loaded, playing...');
+          audio.play().catch(e => {
+            console.error('TTS playback error:', e);
+            // Try to play with user interaction if autoplay is blocked
+            if (e.name === 'NotAllowedError') {
+              console.warn('Autoplay blocked. User interaction required.');
+            }
+          });
+        };
+        audio.onerror = (e) => {
+          console.error('TTS audio load error:', e);
+        };
+        audio.onended = () => {
+          console.log('TTS playback completed');
+        };
+      } else {
+        if (conversationMode && !data.tts_path) {
+          console.warn('TTS requested but no tts_path in response:', data);
+        }
       }
 
     } catch (error) {

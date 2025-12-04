@@ -419,14 +419,24 @@ async def chat_endpoint(
         
         # Generate TTS if conversation mode is active
         tts_path = None
-        if conversation_mode and TTS_AVAILABLE:
-            try:
-                tts_path = text_to_speech(response_text)
-                # Convert to URL path for frontend
-                if tts_path and os.path.exists(tts_path):
-                    tts_path = f"/api/tts/{os.path.basename(tts_path)}"
-            except Exception as e:
-                print(f"⚠️ TTS error: {e}")
+        if conversation_mode:
+            if not TTS_AVAILABLE:
+                log_warning("TTS requested but TTS_AVAILABLE is False")
+            else:
+                try:
+                    log_info("Generating TTS", response_length=len(response_text), conversation_mode=conversation_mode)
+                    tts_path = text_to_speech(response_text)
+                    log_debug("TTS generation result", tts_path=tts_path, file_exists=tts_path and os.path.exists(tts_path) if tts_path else False)
+                    # Convert to URL path for frontend
+                    if tts_path and os.path.exists(tts_path):
+                        tts_path = f"/api/tts/{os.path.basename(tts_path)}"
+                        log_info("TTS file ready", tts_path=tts_path)
+                    else:
+                        log_warning("TTS file not created or not found", tts_path=tts_path)
+                except Exception as e:
+                    log_error("TTS generation failed", error=e)
+                    import traceback
+                    log_error("TTS traceback", traceback=traceback.format_exc())
         
         # Clean up image file
         if image_path and os.path.exists(image_path):
@@ -645,8 +655,15 @@ async def get_tts(filename: str):
     import tempfile
     temp_dir = tempfile.gettempdir()
     file_path = os.path.join(temp_dir, filename)
+    log_debug("TTS file request", filename=filename, file_path=file_path, exists=os.path.exists(file_path))
     if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="audio/wav")
+        file_size = os.path.getsize(file_path)
+        log_info("Serving TTS file", filename=filename, size=file_size)
+        return FileResponse(file_path, media_type="audio/wav", headers={
+            "Cache-Control": "no-cache",
+            "Content-Disposition": f'inline; filename="{filename}"'
+        })
+    log_warning("TTS file not found", filename=filename, file_path=file_path)
     return JSONResponse({"error": "File not found"}, status_code=404)
 
 
