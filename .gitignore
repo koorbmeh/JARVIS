@@ -7,10 +7,11 @@
 !.gitignore
 !.git/
 !.git/**
-!.cursor/
-!.cursor/**
 !.github/
 !.github/**
+
+# IDE-specific files (should not be committed)
+.cursor/
 
 # Keep all Python module files
 !*.py
