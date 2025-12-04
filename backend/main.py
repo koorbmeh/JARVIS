@@ -45,8 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global conversation state
-conversation_mode_active = False
+# Note: conversation_mode is now passed as a local parameter to avoid race conditions
 active_connections: List[WebSocket] = []
 
 
@@ -354,30 +353,30 @@ async def chat_endpoint(
     conversation_mode: bool = Form(False)
 ):
     """Handle chat requests with text and optional image"""
-    global conversation_mode_active
-    conversation_mode_active = conversation_mode
-    
     start_time = time.time()
+    image_path = None  # Initialize at function level for cleanup in exception handler
     
     try:
         # Handle image if provided
-        image_path = None
         if image:
             try:
                 # Check if file was actually uploaded
                 filename = getattr(image, 'filename', None)
                 if filename:
-                    import tempfile
-                    temp_dir = tempfile.gettempdir()
-                    # Preserve original extension
-                    ext = os.path.splitext(filename)[1] or '.png'
-                    image_path = os.path.join(temp_dir, f"jarvis_vision_{int(time.time())}{ext}")
-                    with open(image_path, "wb") as f:
-                        content = await image.read()
-                        if content:  # Only save if we got content
+                    # Read content first before creating file
+                    content = await image.read()
+                    if content:  # Only create file if we have content
+                        import tempfile
+                        import uuid
+                        temp_dir = tempfile.gettempdir()
+                        # Preserve original extension
+                        ext = os.path.splitext(filename)[1] or '.png'
+                        # Use UUID for unique filename to avoid race conditions with concurrent requests
+                        image_path = os.path.join(temp_dir, f"jarvis_vision_{uuid.uuid4().hex}{ext}")
+                        with open(image_path, "wb") as f:
                             f.write(content)
-                        else:
-                            image_path = None  # Empty file
+                    else:
+                        image_path = None  # Empty file - don't create temp file
             except Exception as e:
                 print(f"⚠️ Error reading image file: {e}")
                 image_path = None  # Treat as no image if there's an error
@@ -420,7 +419,7 @@ async def chat_endpoint(
         
         # Generate TTS if conversation mode is active
         tts_path = None
-        if conversation_mode_active and TTS_AVAILABLE:
+        if conversation_mode and TTS_AVAILABLE:
             try:
                 tts_path = text_to_speech(response_text)
                 # Convert to URL path for frontend
@@ -428,6 +427,13 @@ async def chat_endpoint(
                     tts_path = f"/api/tts/{os.path.basename(tts_path)}"
             except Exception as e:
                 print(f"⚠️ TTS error: {e}")
+        
+        # Clean up image file
+        if image_path and os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except:
+                pass
         
         return JSONResponse({
             "response": response_text,
@@ -439,6 +445,14 @@ async def chat_endpoint(
         execution_time = time.time() - start_time
         error_msg = f"Error: {str(e)}"
         log_error_or_slow_response(message, error_msg, execution_time, error=str(e))
+        
+        # Clean up image file on error as well
+        if image_path and os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except:
+                pass
+        
         return JSONResponse(
             {"error": error_msg},
             status_code=500
@@ -662,10 +676,12 @@ async def websocket_chat(websocket: WebSocket):
                 try:
                     import tempfile
                     import base64
+                    import uuid
                     temp_dir = tempfile.gettempdir()
                     # Decode base64 image
                     image_bytes = base64.b64decode(image_data.split(',')[1] if ',' in image_data else image_data)
-                    image_path = os.path.join(temp_dir, f"jarvis_vision_ws_{int(time.time())}.png")
+                    # Use UUID for unique filename to avoid race conditions with concurrent requests
+                    image_path = os.path.join(temp_dir, f"jarvis_vision_ws_{uuid.uuid4().hex}.png")
                     with open(image_path, "wb") as f:
                         f.write(image_bytes)
                     log_debug("WebSocket image saved", path=image_path)
@@ -768,6 +784,13 @@ async def websocket_chat(websocket: WebSocket):
                     "type": "error",
                     "content": f"Error: {str(e)}"
                 })
+                
+                # Clean up image file on error as well
+                if image_path and os.path.exists(image_path):
+                    try:
+                        os.remove(image_path)
+                    except:
+                        pass
             
     except WebSocketDisconnect:
         log_info("WebSocket disconnected")
