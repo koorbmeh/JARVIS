@@ -20,9 +20,30 @@ class DocumentMemory:
     def __init__(self):
         self.vectorstore = None
         self.documents_loaded = False
+    
+    def _ensure_vectorstore_loaded(self):
+        """Lazily load existing vectorstore if it exists and embeddings are ready"""
+        if self.vectorstore is not None:
+            return
+        
+        try:
+            if os.path.exists(CHROMA_DB_DIR) and os.listdir(CHROMA_DB_DIR):
+                # Import here to avoid circular dependency and ensure embeddings are initialized
+                from llm_setup import embeddings
+                self.vectorstore = Chroma(
+                    persist_directory=CHROMA_DB_DIR,
+                    embedding_function=embeddings
+                )
+                self.documents_loaded = True
+        except Exception as e:
+            # If loading fails, we'll create a new one when documents are added
+            pass
         
     def add_documents(self, file_paths: List[str]):
         """Add documents to the vector database"""
+        # Try to load existing vectorstore first
+        self._ensure_vectorstore_loaded()
+        
         from langchain_community.document_loaders import (
             TextLoader, 
             PyPDFLoader,
@@ -71,6 +92,9 @@ class DocumentMemory:
     
     def query(self, question: str) -> str:
         """Query the document database"""
+        # Try to load existing vectorstore first
+        self._ensure_vectorstore_loaded()
+        
         if not self.documents_loaded or self.vectorstore is None:
             return "No documents have been added yet. Please upload documents first."
         

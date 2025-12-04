@@ -10,11 +10,16 @@ from typing import List
 import gradio as gr
 
 # Import from modules
-from config import OLLAMA_MODEL, OLLAMA_EMBEDDING_MODEL, OLLAMA_BASE_URL, CHROMA_DB_DIR, DOCUMENTS_DIR, RECORD_SECONDS
+from config import OLLAMA_MODEL, OLLAMA_EMBEDDING_MODEL, OLLAMA_BASE_URL, CHROMA_DB_DIR, DOCUMENTS_DIR, RECORD_SECONDS, USE_CHAINED_MODELS, TEXT_MODEL, VISION_MODEL
 from llm_setup import agent_executor
 from vision import process_image_with_vision
 from voice import transcribe_audio, text_to_speech, TTS_AVAILABLE
 from rag import doc_memory
+from conversation_logger import (
+    save_conversation_turn, save_full_conversation, ENABLE_CONVERSATION_LOGGING,
+    load_conversation_history_on_startup
+)
+from self_reflection import log_error_or_slow_response
 
 # Conversation mode state
 conversation_mode_active = False
@@ -188,9 +193,12 @@ def process_voice_input(audio, history: List) -> tuple:
         history.append({"role": "user", "content": f"🎤 {transcribed}"})
         history.append({"role": "assistant", "content": response_text})
         
+        # Log conversation to file (for RAG reference)
+        if ENABLE_CONVERSATION_LOGGING:
+            save_conversation_turn(f"🎤 {transcribed}", response_text)
+        
         # Generate TTS if conversation mode is active
         tts_audio = None
-        print(f"🔍 Voice Input TTS Debug: conversation_mode_active={conversation_mode_active}, TTS_AVAILABLE={TTS_AVAILABLE}")
         if conversation_mode_active and TTS_AVAILABLE:
             print(f"🔊 Generating TTS for voice response...")
             tts_audio = text_to_speech(response_text)
@@ -287,6 +295,10 @@ def chat(input_data, history: List) -> tuple:
                 history.append({"role": "user", "content": user_content})
                 history.append({"role": "assistant", "content": response_text})
                 
+                # Log conversation to file (for RAG reference)
+                if ENABLE_CONVERSATION_LOGGING:
+                    save_conversation_turn(user_content, response_text)
+                
                 # Generate TTS if voice responses are enabled
                 tts_audio = None
                 if conversation_mode_active and TTS_AVAILABLE:
@@ -317,6 +329,10 @@ def chat(input_data, history: List) -> tuple:
                     
                     history.append({"role": "user", "content": message})
                     history.append({"role": "assistant", "content": response_text})
+                    
+                    # Log conversation to file (for RAG reference)
+                    if ENABLE_CONVERSATION_LOGGING:
+                        save_conversation_turn(message, response_text)
                     
                     tts_audio = None
                     if conversation_mode_active and TTS_AVAILABLE:
@@ -357,6 +373,10 @@ def chat(input_data, history: List) -> tuple:
                 history.append({"role": "user", "content": message})
                 history.append({"role": "assistant", "content": quick_response})
                 
+                # Log conversation to file (for RAG reference)
+                if ENABLE_CONVERSATION_LOGGING:
+                    save_conversation_turn(message, quick_response)
+                
                 # Generate TTS if needed
                 tts_audio = None
                 if conversation_mode_active and TTS_AVAILABLE:
@@ -394,7 +414,16 @@ def chat(input_data, history: List) -> tuple:
             if context:
                 full_input = f"Previous conversation:\n{context}Current question: {message}"
             
-            response = agent_executor.invoke({"input": full_input})
+            # Track execution time for self-reflection
+            start_time = time.time()
+            try:
+                response = agent_executor.invoke({"input": full_input})
+                execution_time = time.time() - start_time
+                error = None
+            except Exception as e:
+                execution_time = time.time() - start_time
+                error = str(e)
+                response = {"output": f"Error: {error}"}
             
             # Clean up response - remove "Agent stopped" message if we have a valid answer
             response_text = response["output"]
@@ -413,10 +442,21 @@ def chat(input_data, history: List) -> tuple:
             
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": response_text})
+            
+            # Log conversation to file (for RAG reference)
+            if ENABLE_CONVERSATION_LOGGING:
+                save_conversation_turn(message, response_text)
+            
+            # Self-reflection: log errors and slow responses
+            log_error_or_slow_response(
+                task=message,
+                result=response_text,
+                execution_time=execution_time,
+                error=error
+            )
         
         # Generate TTS if voice responses are enabled
         tts_audio = None
-        print(f"🔍 TTS Debug: conversation_mode_active={conversation_mode_active}, TTS_AVAILABLE={TTS_AVAILABLE}")
         if conversation_mode_active and TTS_AVAILABLE:
             print(f"🔊 Generating TTS for response...")
             tts_audio = text_to_speech(response_text)
@@ -437,8 +477,18 @@ def chat(input_data, history: List) -> tuple:
             history = []
         message = str(input_data.get("text", "")) if isinstance(input_data, dict) else str(input_data) if input_data else ""
         user_content = message if message else "📷 [Image uploaded]"
+        error_msg = f"Error: {str(e)}"
         history.append({"role": "user", "content": user_content})
-        history.append({"role": "assistant", "content": f"Error: {str(e)}"})
+        history.append({"role": "assistant", "content": error_msg})
+        
+        # Log error for self-reflection
+        log_error_or_slow_response(
+            task=user_content,
+            result=error_msg,
+            execution_time=0.0,
+            error=str(e)
+        )
+        
         return history, None, None
 
 
@@ -505,7 +555,12 @@ def upload_and_refresh(files):
 # Create Gradio interface
 with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
     gr.Markdown("# 🤖 JARVIS - Your Unified Local AI Agent")
-    gr.Markdown(f"**Model:** {OLLAMA_MODEL} | **Status:** ✅ Connected")
+    # Display correct model(s) based on configuration
+    if USE_CHAINED_MODELS:
+        model_display = f"**Text Model:** {TEXT_MODEL} | **Vision Model:** {VISION_MODEL} | **Status:** ✅ Connected"
+    else:
+        model_display = f"**Model:** {OLLAMA_MODEL} | **Status:** ✅ Connected"
+    gr.Markdown(model_display)
     
     with gr.Tab("💬 Chat"):
         chatbot = gr.Chatbot(
@@ -521,6 +576,7 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
             file_types=["image"],
             show_label=False,
             placeholder="Type your message here... You can paste images from clipboard or drag and drop them.",
+            interactive=True,  # Ensure input is interactive for copy-paste
         )
         
         # Simple bottom row: mic button and send button
@@ -741,13 +797,22 @@ with gr.Blocks(title="JARVIS - Unified AI Agent") as demo:
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("🚀 Starting JARVIS...")
-    print(f"📍 LLM Model: {OLLAMA_MODEL}")
+    if USE_CHAINED_MODELS:
+        print(f"📍 Text Model: {TEXT_MODEL}")
+        print(f"📍 Vision Model: {VISION_MODEL}")
+    else:
+        print(f"📍 LLM Model: {OLLAMA_MODEL}")
     print(f"📍 Embedding Model: {OLLAMA_EMBEDDING_MODEL}")
     print(f"📍 Ollama: {OLLAMA_BASE_URL}")
     print("="*60 + "\n")
     
     os.makedirs(CHROMA_DB_DIR, exist_ok=True)
     os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+    
+    # Load conversation history on startup for context
+    print("\n📚 Loading conversation history...")
+    load_conversation_history_on_startup()
+    print("")
     
     demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
 

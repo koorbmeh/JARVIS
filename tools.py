@@ -29,6 +29,12 @@ def web_search_tool(query: str) -> str:
     try:
         print(f"🔍 Searching web for: {query}")
         
+        # Check if query is about prices - only attempt price extraction for price-related queries
+        price_keywords = ['price', 'cost', 'spot price', 'current price', 'how much', 'cost of', 
+                          'silver price', 'gold price', 'commodity price', 'stock price', 
+                          'crypto price', 'bitcoin price', 'ethereum price', '$', 'usd']
+        is_price_query = any(keyword in query.lower() for keyword in price_keywords)
+        
         # Use direct HTTP request to DuckDuckGo HTML interface (works when DDGS package fails)
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -76,7 +82,7 @@ def web_search_tool(query: str) -> str:
         if not results:
             return "No results found. Try a different search query."
         
-        # Skip ad/redirect URLs and prioritize reputable financial sites
+        # Skip ad/redirect URLs and prioritize reputable financial sites (only for price queries)
         reputable_domains = ['kitco.com', 'apmex.com', 'jmbullion.com', 'sdbullion.com', 
                             'moneymetals.com', 'goldprice.org', 'silverprice.org',
                             'bloomberg.com', 'reuters.com', 'marketwatch.com']
@@ -108,54 +114,56 @@ def web_search_tool(query: str) -> str:
                         page_text = ' '.join(page_text.split()[:WEB_SEARCH_MAX_CONTENT])
                         result['page_content'] = page_text
                         
-                        # Try to extract price from content - improved patterns for better accuracy
-                        # Look for price patterns like $XX.XX per ounce, spot price, etc.
-                        price_patterns = [
-                            # Pattern 1: $XX.XX per ounce (most common)
-                            r'\$[\d,]+\.?\d+\s*(?:per\s+)?(?:ounce|oz|troy\s+ounce|troy\s+oz)',
-                            # Pattern 2: Spot price: $XX.XX or Current price: $XX.XX
-                            r'(?:spot\s+price|current\s+price|live\s+price|price)[:\s=]+\$?([\d,]+\.?\d+)',
-                            # Pattern 3: $XX.XX USD
-                            r'\$([\d,]+\.?\d+)\s*(?:USD|US\s+dollar|dollars?)',
-                            # Pattern 4: Bid/Ask prices (common on financial sites)
-                            r'(?:bid|ask|price)[:\s]+\$?([\d,]+\.?\d+)',
-                            # Pattern 5: Just $XX.XX near "silver" or "gold" keywords
-                            r'\$([\d,]+\.?\d+)(?=\s*(?:per\s+ounce|oz|USD|silver|gold))',
-                        ]
-                        extracted_prices = []
-                        for pattern in price_patterns:
-                            matches = re.findall(pattern, page_text, re.IGNORECASE)
-                            if matches:
-                                # Clean up the match (remove commas, ensure it's a valid price)
-                                for match in matches:
-                                    if isinstance(match, tuple):
-                                        match = match[0] if match[0] else match[1] if len(match) > 1 else str(match)
-                                    price_str = str(match).replace(',', '')
-                                    try:
-                                        price_float = float(price_str)
-                                        # Sanity check: silver is typically $15-50/oz, gold $1500-3000/oz
-                                        if 10 <= price_float <= 100:  # Likely silver
-                                            extracted_prices.append(f"${price_float:.2f} per ounce")
-                                        elif 1000 <= price_float <= 5000:  # Likely gold
-                                            extracted_prices.append(f"${price_float:.2f} per ounce")
-                                    except:
-                                        pass
-                                if extracted_prices:
-                                    # Use the first valid price found
-                                    result['extracted_price'] = extracted_prices[0]
-                                    print(f"   ✅ Extracted price: {extracted_prices[0]}")
-                                    break
-                        
-                        # If no price found with patterns, try to find any $XX.XX in the first 500 chars
-                        if 'extracted_price' not in result or not result.get('extracted_price'):
-                            price_simple = re.search(r'\$([\d,]+\.\d{2})', page_text[:500])
-                            if price_simple:
-                                price_val = float(price_simple.group(1).replace(',', ''))
-                                if 10 <= price_val <= 100 or 1000 <= price_val <= 5000:
-                                    result['extracted_price'] = f"${price_val:.2f} per ounce (approximate)"
-                                    print(f"   ✅ Extracted approximate price: ${price_val:.2f}")
-                            else:
-                                print(f"   ⚠️  No price extracted from {url}")
+                        # Only attempt price extraction if this is a price-related query
+                        if is_price_query:
+                            # Try to extract price from content - improved patterns for better accuracy
+                            # Look for price patterns like $XX.XX per ounce, spot price, etc.
+                            price_patterns = [
+                                # Pattern 1: $XX.XX per ounce (most common)
+                                r'\$[\d,]+\.?\d+\s*(?:per\s+)?(?:ounce|oz|troy\s+ounce|troy\s+oz)',
+                                # Pattern 2: Spot price: $XX.XX or Current price: $XX.XX
+                                r'(?:spot\s+price|current\s+price|live\s+price|price)[:\s=]+\$?([\d,]+\.?\d+)',
+                                # Pattern 3: $XX.XX USD
+                                r'\$([\d,]+\.?\d+)\s*(?:USD|US\s+dollar|dollars?)',
+                                # Pattern 4: Bid/Ask prices (common on financial sites)
+                                r'(?:bid|ask|price)[:\s]+\$?([\d,]+\.?\d+)',
+                                # Pattern 5: Just $XX.XX near "silver" or "gold" keywords
+                                r'\$([\d,]+\.?\d+)(?=\s*(?:per\s+ounce|oz|USD|silver|gold))',
+                            ]
+                            extracted_prices = []
+                            for pattern in price_patterns:
+                                matches = re.findall(pattern, page_text, re.IGNORECASE)
+                                if matches:
+                                    # Clean up the match (remove commas, ensure it's a valid price)
+                                    for match in matches:
+                                        if isinstance(match, tuple):
+                                            match = match[0] if match[0] else match[1] if len(match) > 1 else str(match)
+                                        price_str = str(match).replace(',', '')
+                                        try:
+                                            price_float = float(price_str)
+                                            # Sanity check: silver is typically $15-50/oz, gold $1500-3000/oz
+                                            if 10 <= price_float <= 100:  # Likely silver
+                                                extracted_prices.append(f"${price_float:.2f} per ounce")
+                                            elif 1000 <= price_float <= 5000:  # Likely gold
+                                                extracted_prices.append(f"${price_float:.2f} per ounce")
+                                        except:
+                                            pass
+                                    if extracted_prices:
+                                        # Use the first valid price found
+                                        result['extracted_price'] = extracted_prices[0]
+                                        print(f"   ✅ Extracted price: {extracted_prices[0]}")
+                                        break
+                            
+                            # If no price found with patterns, try to find any $XX.XX in the first 500 chars
+                            if 'extracted_price' not in result or not result.get('extracted_price'):
+                                price_simple = re.search(r'\$([\d,]+\.\d{2})', page_text[:500])
+                                if price_simple:
+                                    price_val = float(price_simple.group(1).replace(',', ''))
+                                    if 10 <= price_val <= 100 or 1000 <= price_val <= 5000:
+                                        result['extracted_price'] = f"${price_val:.2f} per ounce (approximate)"
+                                        print(f"   ✅ Extracted approximate price: ${price_val:.2f}")
+                                # Only log warning if we were actually looking for a price
+                                # (removed the warning message to reduce log spam)
                         
                         # Only fetch from one reputable site to avoid rate limiting
                         if is_reputable:
