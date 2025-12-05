@@ -69,3 +69,6 @@ __pycache__/
 
 # Debug logs (can be large, don't commit)
 debug_logs/
+
+# Temporary documentation files (not for commit)
+VOICE_IMPROVEMENTS.md

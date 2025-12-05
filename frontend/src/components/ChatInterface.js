@@ -7,7 +7,7 @@ const ChatInterface = () => {
   const [messages, setMessages] = useState([]);
   const [conversationMode, setConversationMode] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [useStreaming, setUseStreaming] = useState(false); // Disable streaming by default (WebSocket has issues)
+  const [useStreaming, setUseStreaming] = useState(true); // Streaming via WebSocket (enabled by default)
   const messagesEndRef = useRef(null);
   const wsRef = useRef(null);
 
@@ -349,16 +349,6 @@ const ChatInterface = () => {
                 onChange={(e) => setConversationMode(e.target.checked)}
               />
               <span>🎙️ Voice Responses</span>
-            </label>
-          </div>
-          <div className="streaming-toggle">
-            <label>
-              <input
-                type="checkbox"
-                checked={useStreaming}
-                onChange={(e) => setUseStreaming(e.target.checked)}
-              />
-              <span>⚡ Streaming</span>
             </label>
           </div>
         </div>

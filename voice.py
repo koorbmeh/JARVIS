@@ -43,7 +43,7 @@ else:
     except ImportError:
         print("⚠️  Whisper not available - install with: pip install openai-whisper")
 
-# Try pyttsx3 first (simpler, more reliable)
+# Try pyttsx3 first (simple, reliable, works everywhere)
 try:
     import pyttsx3
     TTS_AVAILABLE = True
@@ -162,12 +162,15 @@ def initialize_tts():
                 # Set voice properties
                 voices = tts_engine.getProperty('voices')
                 if voices:
-                    # Try to use a better voice if available
+                    # Try to use a better voice if available (prefer female or zira)
                     for voice in voices:
                         if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
                             tts_engine.setProperty('voice', voice.id)
+                            print(f"   Using voice: {voice.name}")
                             break
-                tts_engine.setProperty('rate', 150)  # Speed of speech
+                
+                # Adjust rate for more natural speech (slightly slower = more natural)
+                tts_engine.setProperty('rate', 145)  # Slightly slower for more natural sound
                 tts_engine.setProperty('volume', 0.9)  # Volume level
                 print("✅ pyttsx3 TTS initialized")
             return True
@@ -420,6 +423,10 @@ def transcribe_audio(audio_path: str) -> str:
         log_error("Exception in transcribe_audio", error=e, traceback=error_details)
         print(f"❌ Transcription error details:\n{error_details}")
         return f"Error transcribing audio: {str(e)}"
+
+
+
+
 
 
 def text_to_speech(text: str, output_path: str = None) -> str:
